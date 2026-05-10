@@ -347,29 +347,46 @@ def update_account(
     *,
     security: str | None = None,
     group_name: str | None = None,
+    is_ticker: bool | None = None,
+    ticker: str | None = None,
 ) -> None:
     """Update editable fields of an account. Pass only the fields to change."""
     accounts = load_accounts()
-    idx = accounts["account_id"].to_list().index(account_id) if account_id in accounts["account_id"].to_list() else None
-    if idx is None:
+    if account_id not in accounts["account_id"].to_list():
         raise ValueError(f"Account {account_id!r} not found.")
+
+    updates: dict[str, pl.Expr] = {}
+
     if security is not None:
         security = security.strip()
         if not security:
             raise ValueError("Security name cannot be empty.")
-        save_accounts(accounts.with_columns(
+        updates["security"] = (
             pl.when(pl.col("account_id") == account_id)
             .then(pl.lit(security))
             .otherwise(pl.col("security"))
-            .alias("security")
-        ))
+        )
     if group_name is not None:
-        save_accounts(load_accounts().with_columns(
+        updates["group_name"] = (
             pl.when(pl.col("account_id") == account_id)
             .then(pl.lit(group_name.strip()))
             .otherwise(pl.col("group_name"))
-            .alias("group_name")
-        ))
+        )
+    if is_ticker is not None:
+        updates["is_ticker"] = (
+            pl.when(pl.col("account_id") == account_id)
+            .then(pl.lit(is_ticker))
+            .otherwise(pl.col("is_ticker"))
+        )
+    if ticker is not None:
+        updates["ticker"] = (
+            pl.when(pl.col("account_id") == account_id)
+            .then(pl.lit(ticker.strip()))
+            .otherwise(pl.col("ticker"))
+        )
+
+    if updates:
+        save_accounts(accounts.with_columns(**updates))
 
 
 # ---------------------------------------------------------------------------

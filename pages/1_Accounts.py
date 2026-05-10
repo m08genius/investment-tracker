@@ -88,7 +88,7 @@ else:
 # ---------------------------------------------------------------------------
 
 with st.expander("➕ Add a new security"):
-    # is_ticker toggle outside the form so it reruns and reshapes the form.
+    # All conditional widgets outside the form so they trigger reruns immediately.
     if "new_sec_is_ticker" not in st.session_state:
         st.session_state["new_sec_is_ticker"] = False
 
@@ -101,15 +101,24 @@ with st.expander("➕ Add a new security"):
     )
     st.session_state["new_sec_is_ticker"] = (is_ticker_toggle == "Ticker")
 
-    with st.form("new_account_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        existing_groups = storage.list_account_groups()
-        new_group = c1.text_input(
-            "Account Group",
+    # Group dropdown with "New group..." option — outside form for live rerun.
+    _add_existing_groups = storage.list_account_groups()
+    _add_group_options = _add_existing_groups + (["+ New group..."] if _add_existing_groups else [])
+    _add_group_sel = st.selectbox(
+        "Account Group",
+        options=_add_group_options if _add_group_options else ["+ New group..."],
+        key="new_sec_group_sel",
+    )
+    _add_new_group_str = ""
+    if _add_group_sel == "+ New group...":
+        _add_new_group_str = st.text_input(
+            "New group name",
             placeholder="e.g. Fidelity Brokerage",
-            help="Groups related securities together. Existing: " + (", ".join(existing_groups) if existing_groups else "none yet"),
+            key="new_sec_group_text",
         )
-        new_security = c2.text_input(
+
+    with st.form("new_account_form", clear_on_submit=True):
+        new_security = st.text_input(
             "Security Name",
             placeholder="e.g. Cash, S&P 500 Fund",
         )
@@ -134,6 +143,10 @@ with st.expander("➕ Add a new security"):
         if submitted:
             try:
                 is_ticker = st.session_state["new_sec_is_ticker"]
+                new_group = (
+                    _add_new_group_str if _add_group_sel == "+ New group..."
+                    else _add_group_sel
+                )
                 storage.add_account(
                     new_group,
                     new_security,
@@ -597,15 +610,75 @@ else:
 
 st.divider()
 with st.expander("✏️ Edit security"):
+    # is_ticker toggle and group dropdown outside any form so they trigger reruns.
+    _edit_ticker_key = f"edit_is_ticker_{selected_id}"
+    if _edit_ticker_key not in st.session_state:
+        st.session_state[_edit_ticker_key] = is_ticker_acct
+
+    _edit_type = st.radio(
+        "Security type",
+        ["Generic", "Ticker"],
+        index=1 if st.session_state[_edit_ticker_key] else 0,
+        key=f"edit_type_radio_{selected_id}",
+        horizontal=True,
+    )
+    st.session_state[_edit_ticker_key] = (_edit_type == "Ticker")
+
+    _edit_existing_groups = storage.list_account_groups()
+    _edit_group_options = _edit_existing_groups + (["+ New group..."] if _edit_existing_groups else [])
+    _edit_group_default = (
+        selected_group if selected_group in _edit_existing_groups else "+ New group..."
+    )
+    _edit_group_sel = st.selectbox(
+        "Account Group",
+        options=_edit_group_options if _edit_group_options else ["+ New group..."],
+        index=(_edit_group_options.index(_edit_group_default)
+               if _edit_group_default in _edit_group_options else 0),
+        key=f"edit_group_sel_{selected_id}",
+    )
+    _edit_new_group_str = ""
+    if _edit_group_sel == "+ New group...":
+        _edit_new_group_str = st.text_input(
+            "New group name",
+            value=selected_group if selected_group not in _edit_existing_groups else "",
+            key=f"edit_group_text_{selected_id}",
+        )
+
     with st.form("edit_security_form"):
         new_security_name = st.text_input("Security name", value=selected_security)
-        new_group_name = st.text_input("Account group", value=selected_group)
+
+        new_ticker_val = ticker_symbol
+        if st.session_state[_edit_ticker_key]:
+            cached_tickers = storage.list_active_tickers()
+            if not cached_tickers:
+                st.warning("No tickers cached yet. Visit **Ticker Data** to add one.")
+                new_ticker_val = ""
+            else:
+                _ticker_opts = [""] + cached_tickers
+                _ticker_default_idx = (
+                    _ticker_opts.index(ticker_symbol)
+                    if ticker_symbol in _ticker_opts else 0
+                )
+                new_ticker_val = st.selectbox(
+                    "Ticker symbol",
+                    options=_ticker_opts,
+                    index=_ticker_default_idx,
+                    format_func=lambda t: t if t else "— select —",
+                )
+
         if st.form_submit_button("Save changes"):
             try:
+                _edit_is_ticker = st.session_state[_edit_ticker_key]
+                _edit_group = (
+                    _edit_new_group_str if _edit_group_sel == "+ New group..."
+                    else _edit_group_sel
+                )
                 storage.update_account(
                     selected_id,
                     security=new_security_name,
-                    group_name=new_group_name,
+                    group_name=_edit_group,
+                    is_ticker=_edit_is_ticker,
+                    ticker=new_ticker_val if _edit_is_ticker else "",
                 )
                 st.success("Security updated.")
                 st.rerun()
