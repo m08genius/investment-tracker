@@ -101,6 +101,22 @@ def test_add_entry_rejects_future_date():
         storage.add_entry(aid, 100.0, future)
 
 
+def test_add_entry_rejects_duplicate_entry_time():
+    aid = storage.add_account("A1")
+    storage.add_entry(aid, 100.0, date(2024, 1, 1))
+    with pytest.raises(ValueError, match="entry already exists"):
+        storage.add_entry(aid, 200.0, date(2024, 1, 1))
+
+
+def test_add_entry_rejects_duplicate_snapshot_time():
+    aid = storage.add_account("A1")
+    storage.add_entry(aid, 100.0, date(2024, 1, 1),
+                      snapshot_time=date(2024, 1, 1), snapshot_value=1000.0)
+    with pytest.raises(ValueError, match="snapshot already exists"):
+        storage.add_entry(aid, 200.0, date(2024, 2, 1),
+                          snapshot_time=date(2024, 1, 1), snapshot_value=999.0)
+
+
 def test_add_entry_accepts_iso_date_string():
     aid = storage.add_account("A1")
     eid = storage.add_entry(aid, 100.0, "2024-03-15")

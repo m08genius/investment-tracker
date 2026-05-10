@@ -297,6 +297,25 @@ def add_entry(
     snap_time_str = _coerce_date(snapshot_time).isoformat() if snapshot_time is not None else None
     snap_val = float(snapshot_value) if snapshot_value is not None else None
 
+    existing = load_entries(account_id)
+    date_str = entry_date.isoformat()
+
+    if float(amount) != 0.0:
+        if existing.filter(
+            (pl.col("amount") != 0.0) & (pl.col("entry_time") == date_str)
+        ).height > 0:
+            raise ValueError(
+                f"An entry already exists for {date_str} on this account. "
+                "Delete the existing entry first or use a different date."
+            )
+
+    if snap_time_str is not None:
+        if existing.filter(pl.col("snapshot_time") == snap_time_str).height > 0:
+            raise ValueError(
+                f"A snapshot already exists for {snap_time_str} on this account. "
+                "Delete the existing snapshot first or use a different date."
+            )
+
     new_id = _new_id()
     new_row = pl.DataFrame(
         {
