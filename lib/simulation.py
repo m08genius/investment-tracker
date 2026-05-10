@@ -44,17 +44,27 @@ def _price_lookup(prices: pl.DataFrame, target: date, column: str) -> float | No
     return float(after.row(0, named=True)[column])
 
 
-def _price_on_or_before(prices: pl.DataFrame, target: date, column: str) -> float | None:
-    """
-    Return the price on `target`, or the most recent prior trading day's price
-    if `target` is missing. Used for valuation date when target might be a
-    weekend/holiday.
+def _price_on_or_before(
+    prices: pl.DataFrame,
+    target: date,
+    column: str,
+    max_days_back: int | None = 3,
+) -> float | None:
+    """Return the price on *target*, or the nearest prior trading day's price.
+
+    *max_days_back* caps how stale the result can be (calendar days).  The
+    default of 3 covers a weekend (Sat→Fri = 1, Sun→Fri = 2) plus one public
+    holiday (Mon→Fri = 3).  Pass ``None`` for uncapped historical lookups.
     """
     target_iso = target.isoformat()
-    before = prices.filter(pl.col("date") <= target_iso)
+    before = prices.filter(pl.col("date") <= target_iso).sort("date", descending=True)
     if before.is_empty():
         return None
-    return float(before.sort("date", descending=True).row(0, named=True)[column])
+    row = before.row(0, named=True)
+    effective = date.fromisoformat(row["date"])
+    if max_days_back is not None and (target - effective).days > max_days_back:
+        return None
+    return float(row[column])
 
 
 def simulate_ticker_position(
@@ -230,8 +240,8 @@ def compute_ticker_comparison_twrr(
         t_prev = snaps[i - 1][0]
         t_cur = snaps[i][0]
 
-        p_start = _price_on_or_before(prices, t_prev, price_column)
-        p_end = _price_on_or_before(prices, t_cur, price_column)
+        p_start = _price_on_or_before(prices, t_prev, price_column, max_days_back=None)
+        p_end = _price_on_or_before(prices, t_cur, price_column, max_days_back=None)
 
         if p_start is None or p_start <= 0:
             warnings.append(

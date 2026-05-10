@@ -645,16 +645,6 @@ def set_snapshot(
     save_entries(df)
 
 
-def get_latest_snapshot(account_id: str) -> dict | None:
-    """
-    Return the most recent snapshot for an account as
-    {'as_of_date': str, 'value': float}, or None.
-    """
-    snaps = load_snapshots(account_id)
-    if snaps.is_empty():
-        return None
-    return snaps.sort("as_of_date", descending=True).row(0, named=True)
-
 
 def remove_snapshot(account_id: str, as_of_date: date | str) -> None:
     """
@@ -860,34 +850,51 @@ def get_ticker_price_on_date(
 ) -> float | None:
     """Return the cached price for a ticker on a specific date.
 
-    If the market was closed on that date (weekend / holiday), returns the
-    price from the most recent prior trading day that is available in the
-    cache.  Returns None if no price exists on or before the requested date.
+    Used for historical trade-date lookups where no staleness limit applies —
+    if the market was closed that day the nearest prior trading day is used.
+    Returns None if no price exists on or before the requested date.
     """
-    result = get_ticker_price_and_date(ticker, on_date, price_type)
+    result = get_ticker_price_and_date(ticker, on_date, price_type, max_days_back=None)
     return result[1] if result is not None else None
 
 
 def get_ticker_price_and_date(
-    ticker: str, on_date: date | str, price_type: str = "close"
+    ticker: str,
+    on_date: date | str,
+    price_type: str = "close",
+    max_days_back: int | None = 3,
 ) -> tuple[date, float] | None:
-    """Like get_ticker_price_on_date but also returns the actual price date.
+    """Return (effective_date, price) for the most recent cached trading day
+    on or before *on_date*.
 
-    Returns (effective_date, price) where effective_date is the trading day
-    whose price was used (may be earlier than on_date for weekends/holidays),
-    or None if no price exists on or before the requested date.
+    Parameters
+    ----------
+    max_days_back
+        Maximum number of calendar days the effective date may precede
+        *on_date*.  Handles weekends (Sat→Fri = 1 day, Sun→Fri = 2 days) and
+        one public holiday (Mon after long weekend → Fri = 3 days).  Pass
+        ``None`` for historical lookups where no staleness limit applies.
+        Defaults to 3.
+
+    Returns
+    -------
+    ``(effective_date, price)`` or ``None`` if no qualifying price is found.
     """
     if price_type not in VALID_PRICE_TYPES:
         raise ValueError(f"price_type must be one of {sorted(VALID_PRICE_TYPES)}, got {price_type!r}")
     prices = load_ticker_prices(ticker)
     if prices.is_empty():
         return None
-    date_str = _coerce_date(on_date).isoformat()
+    requested = _coerce_date(on_date)
+    date_str = requested.isoformat()
     candidates = prices.filter(pl.col("date") <= date_str).sort("date")
     if candidates.is_empty():
         return None
     row = candidates.row(-1, named=True)
-    return _coerce_date(row["date"]), float(row[price_type])
+    effective = _coerce_date(row["date"])
+    if max_days_back is not None and (requested - effective).days > max_days_back:
+        return None
+    return effective, float(row[price_type])
 
 
 def compute_ticker_snapshots(
@@ -911,6 +918,7 @@ def compute_ticker_snapshots(
     entries = (
         load_entries(account_id)
         .filter(pl.col("shares") != 0.0)
+        .filter(pl.col("entry_time") <= through_date.isoformat())
         .sort("entry_time")
     )
 
@@ -929,9 +937,13 @@ def compute_ticker_snapshots(
         else:
             snaps.append((entry_date, value))
 
-    # Always append the terminal point at through_date.
-    final_close = get_ticker_price_on_date(ticker, through_date, "close")
-    if final_close is not None:
+    # Append the terminal point at through_date (respects the 3-day staleness
+    # limit for the price lookup, but stamps the snapshot with through_date so
+    # ticker and non-ticker accounts share the same terminal date in a
+    # holistic view).
+    terminal = get_ticker_price_and_date(ticker, through_date, "close")
+    if terminal is not None:
+        _, final_close = terminal
         final_value = cumulative_shares * final_close
         if snaps and snaps[-1][0] == through_date:
             snaps[-1] = (through_date, final_value)

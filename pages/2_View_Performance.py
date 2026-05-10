@@ -73,7 +73,16 @@ show_twrr = st.checkbox(
 )
 st.session_state["perf_twrr_saved"] = show_twrr
 
-valuation_date = date.today()
+if "perf_valuation_date" not in st.session_state:
+    st.session_state["perf_valuation_date"] = date.today()
+
+valuation_date: date = st.date_input(
+    "Compute returns as of",
+    value=st.session_state["perf_valuation_date"],
+    max_value=date.today(),
+    help="MWRR and TWRR are computed using portfolio value as of this date.",
+)
+st.session_state["perf_valuation_date"] = valuation_date
 
 _GREEN = "background-color: #d4edda"
 _RED   = "background-color: #f8d7da"
@@ -145,7 +154,7 @@ for row in accounts.iter_rows(named=True):
     cash_flows: list[tuple[date, float]] = [
         (date.fromisoformat(d), float(a))
         for d, a in zip(entries["entry_time"].to_list(), entries["amount"].to_list())
-        if float(a) != 0.0
+        if float(a) != 0.0 and date.fromisoformat(d) <= valuation_date
     ]
 
     # Determine current portfolio value and the date it applies to.
@@ -154,16 +163,20 @@ for row in accounts.iter_rows(named=True):
     current_val: float | None = None
     current_val_date: date = valuation_date
     if is_ticker and ticker_sym:
-        total_shares = float(entries["shares"].sum() or 0.0)
+        total_shares = float(
+            entries.filter(pl.col("entry_time") <= valuation_date.isoformat())["shares"].sum() or 0.0
+        )
         price_result = storage.get_ticker_price_and_date(ticker_sym, valuation_date, "close")
         if price_result is not None:
             current_val_date, close_price = price_result
             current_val = total_shares * close_price
     else:
-        latest = storage.get_latest_snapshot(aid)
-        if latest is not None:
-            current_val = float(latest["value"])
-            current_val_date = date.fromisoformat(latest["as_of_date"])
+        snaps = storage.load_snapshots(aid).filter(
+            pl.col("as_of_date") == valuation_date.isoformat()
+        )
+        if not snaps.is_empty():
+            current_val = float(snaps["value"][0])
+            current_val_date = date.fromisoformat(snaps["as_of_date"][0])
 
     own_mwrr = None
     if current_val is not None:
@@ -176,16 +189,23 @@ for row in accounts.iter_rows(named=True):
         if is_ticker and ticker_sym:
             snaps = storage.compute_ticker_snapshots(aid, ticker_sym, valuation_date)
         else:
-            raw = [
-                (date.fromisoformat(r["as_of_date"]), float(r["value"]))
-                for r in storage.load_snapshots(aid).iter_rows(named=True)
-            ]
-            snaps = returns.enrich_snapshots_at_flow_dates(raw, cash_flows)
+            all_snaps = storage.load_snapshots(aid).filter(
+                pl.col("as_of_date") <= valuation_date.isoformat()
+            ).sort("as_of_date")
+            # Only compute TWRR if the last snapshot is exactly on the valuation date.
+            if (
+                not all_snaps.is_empty()
+                and all_snaps["as_of_date"][-1] == valuation_date.isoformat()
+            ):
+                snaps = [
+                    (date.fromisoformat(r["as_of_date"]), float(r["value"]))
+                    for r in all_snaps.iter_rows(named=True)
+                ]
         row_data["Own TWRR"] = returns.compute_twrr(snaps, cash_flows)
 
     for tk in selected_tickers:
         mwrr_rate, warns = simulation.compute_ticker_comparison_mwrr(
-            cash_flows, tk, valuation_date,
+            cash_flows, tk, current_val_date,  # same date as own MWRR
         )
         row_data[f"{tk} MWRR"] = mwrr_rate
         for w in warns:
@@ -235,6 +255,7 @@ if not selected_agg_ids:
 else:
     agg_flows: list[tuple[date, float]] = []
     agg_value = 0.0
+    agg_val_date: date = valuation_date
     missing: list[str] = []
     agg_warnings: list[str] = []
 
@@ -244,23 +265,33 @@ else:
         cash_flows = [
             (date.fromisoformat(d), float(a))
             for d, a in zip(entries["entry_time"].to_list(), entries["amount"].to_list())
-            if float(a) != 0.0
+            if float(a) != 0.0 and date.fromisoformat(d) <= valuation_date
         ]
         if acct["is_ticker"] and acct["ticker"]:
-            total_shares = float(entries["shares"].sum() or 0.0)
+            total_shares = float(
+                entries.filter(pl.col("entry_time") <= valuation_date.isoformat())["shares"].sum() or 0.0
+            )
             price_result = storage.get_ticker_price_and_date(acct["ticker"], valuation_date, "close")
             if price_result is not None:
+                effective_date, close_price = price_result
                 agg_flows.extend(cash_flows)
-                agg_value += total_shares * price_result[1]
+                agg_value += total_shares * close_price
+                if effective_date < agg_val_date:
+                    agg_val_date = effective_date
             else:
                 missing.append(all_account_names[aid])
         else:
-            latest = storage.get_latest_snapshot(aid)
-            if latest is None:
+            snaps = storage.load_snapshots(aid).filter(
+                pl.col("as_of_date") == valuation_date.isoformat()
+            )
+            if snaps.is_empty():
                 missing.append(all_account_names[aid])
             else:
+                snap_date = date.fromisoformat(snaps["as_of_date"][0])
                 agg_flows.extend(cash_flows)
-                agg_value += float(latest["value"])
+                agg_value += float(snaps["value"][0])
+                if snap_date < agg_val_date:
+                    agg_val_date = snap_date
 
     if missing:
         st.caption(
@@ -271,7 +302,7 @@ else:
 
     agg_own_mwrr: float | None = None
     if eligible and agg_flows:
-        agg_own_mwrr = returns.compute_mwrr(agg_flows, agg_value, valuation_date)
+        agg_own_mwrr = returns.compute_mwrr(agg_flows, agg_value, agg_val_date)
 
     agg_row: dict = {"Account": "Aggregate", "Own MWRR": agg_own_mwrr}
     if show_twrr:
@@ -280,7 +311,7 @@ else:
     for tk in selected_tickers:
         if eligible and agg_flows:
             rate, warns = simulation.compute_ticker_comparison_mwrr(
-                agg_flows, tk, valuation_date,
+                agg_flows, tk, agg_val_date,
             )
             agg_row[f"{tk} MWRR"] = rate
             for w in warns:

@@ -292,22 +292,6 @@ def test_set_snapshot_keeps_other_dates():
     assert storage.load_snapshots(aid).height == 2
 
 
-def test_get_latest_snapshot():
-    aid = _acct()
-    storage.set_snapshot(aid, 1000.0, date(2024, 6, 1))
-    storage.set_snapshot(aid, 1200.0, date(2024, 7, 1))
-    storage.set_snapshot(aid, 1100.0, date(2024, 5, 1))
-
-    latest = storage.get_latest_snapshot(aid)
-    assert latest is not None
-    assert latest["as_of_date"] == "2024-07-01"
-    assert latest["value"] == 1200.0
-
-
-def test_get_latest_snapshot_none_for_no_snapshots():
-    aid = _acct()
-    assert storage.get_latest_snapshot(aid) is None
-
 
 def test_add_entry_with_snapshot_attaches_to_row():
     aid = _acct()
