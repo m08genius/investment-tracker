@@ -749,7 +749,34 @@ else:
     _fmt_dollar = lambda x: f"${x:,.2f}" if x is not None else ""
     _fmt_shares = lambda x: f"{x:g}" if x is not None else ""
 
-    display = all_entries.with_columns(
+    # For ticker accounts compute total value live (cumulative shares × close price).
+    if is_ticker_acct and ticker_symbol:
+        _snap_dict: dict[str, float] = {
+            d.isoformat(): v
+            for d, v in storage.compute_ticker_snapshots(selected_id, ticker_symbol)
+        }
+        _tv_series = pl.Series(
+            "_tv",
+            [_snap_dict.get(d) for d in all_entries["entry_time"].to_list()],
+            dtype=pl.Float64,
+        )
+        _tv_col = (
+            pl.when(pl.col("_tv").is_not_null())
+            .then(pl.col("_tv").map_elements(_fmt_dollar, return_dtype=pl.Utf8))
+            .otherwise(pl.lit(""))
+            .alias("Total Value")
+        )
+        _base = all_entries.with_column(_tv_series)
+    else:
+        _tv_col = (
+            pl.when(pl.col("snapshot_value").is_not_null())
+            .then(pl.col("snapshot_value").map_elements(_fmt_dollar, return_dtype=pl.Utf8))
+            .otherwise(pl.lit(""))
+            .alias("Total Value")
+        )
+        _base = all_entries
+
+    display = _base.with_columns(
         pl.when(pl.col("amount") > 0).then(pl.lit("Buy / Deposit"))
           .when(pl.col("amount") < 0).then(pl.lit("Sell / Withdraw"))
           .otherwise(pl.lit("Snapshot")).alias("Type"),
@@ -762,9 +789,7 @@ else:
         pl.when(pl.col("amount") != 0.0)
           .then(pl.col("amount").abs().map_elements(_fmt_dollar, return_dtype=pl.Utf8))
           .otherwise(pl.lit("")).alias("Amount"),
-        pl.when(pl.col("snapshot_value").is_not_null())
-          .then(pl.col("snapshot_value").map_elements(_fmt_dollar, return_dtype=pl.Utf8))
-          .otherwise(pl.lit("")).alias("Total Value"),
+        _tv_col,
         pl.lit(False).alias("Delete?"),
     ).select(
         pl.col("Delete?"),
