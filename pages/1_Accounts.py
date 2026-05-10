@@ -253,20 +253,6 @@ with st.expander("➕ Add entry", expanded=True):
                     f"= ${_record_total:,.2f}**"
                 )
 
-        # Portfolio value preview (total shares × close price)
-        _existing_shares = float(_all_entries["shares"].sum() or 0.0)
-        _close_preview = storage.get_ticker_price_on_date(ticker_symbol, entry_date, "close")
-        try:
-            _preview_shares = _parse_shares(shares_str) if shares_str.strip() else None
-        except ValueError:
-            _preview_shares = None
-        if _close_preview is not None and _preview_shares is not None:
-            _total_after = _existing_shares + _preview_shares
-            _snap_preview = _total_after * _close_preview
-            st.info(
-                f"Portfolio value after entry: "
-                f"**{_total_after:g} shares × ${_close_preview:,.4f} = ${_snap_preview:,.2f}**"
-            )
 
         note = st.text_input("Note (optional)", value=_last.get("note", ""))
 
