@@ -117,9 +117,10 @@ def add_ticker(
     end: date | None = None,
 ) -> dict:
     """
-    Add a brand-new ticker to the cache. Performs a full fetch from `start`
-    (default: 2012-10-01) through `end` (default: today), detects close-only,
-    persists prices and metadata, and returns the new metadata dict.
+    Add a ticker to the UI. If a price file already exists on disk (e.g. the
+    ticker was previously removed from the UI), restores it and refreshes from
+    the latest cached date forward. Otherwise performs a full fetch from
+    `start` (default: 2012-10-01) through `end` (default: today).
 
     Raises ValueError if the ticker returns no data.
     """
@@ -129,9 +130,21 @@ def add_ticker(
 
     if storage.get_ticker_metadata(ticker) is not None:
         raise ValueError(
-            f"Ticker {ticker!r} is already cached. Use refresh_ticker() instead."
+            f"Ticker {ticker!r} is already in the UI. Use refresh instead."
         )
 
+    existing_prices = storage.load_ticker_prices(ticker)
+    if not existing_prices.is_empty():
+        # Price file exists from a previous add — restore metadata and refresh.
+        close_only = detect_close_only(existing_prices)
+        storage.upsert_ticker_metadata(
+            ticker,
+            price_type="close",
+            close_only=close_only,
+        )
+        return refresh_ticker(ticker)
+
+    # No existing data — full fetch.
     start = start or DEFAULT_START_DATE
     end = end or date.today()
 

@@ -144,12 +144,12 @@ for t in cached:
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.error(f"Failed: {e}")
-        if ac2.button("🗑️", key=f"remove_{t}", help="Remove this ticker"):
+        if ac2.button("🗑️", key=f"remove_{t}", help="Hide this ticker from the UI (price data is kept on disk)"):
             st.session_state[f"confirm_remove_{t}"] = True
 
         if st.session_state.get(f"confirm_remove_{t}"):
             wcol, ycol, ncol = st.columns([4, 1, 1])
-            wcol.warning(f"Remove cached data for **{t}**?")
+            wcol.warning(f"Hide **{t}** from the UI? Price data is kept on disk — re-adding it will only fetch new prices.")
             if ycol.button("Yes", key=f"yes_remove_{t}"):
                 storage.remove_ticker(t)
                 st.session_state.pop(f"confirm_remove_{t}", None)

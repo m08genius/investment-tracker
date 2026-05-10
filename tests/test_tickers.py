@@ -141,7 +141,7 @@ def test_add_ticker_rejects_duplicate():
     })
     tickers.set_fetcher(fake)
     tickers.add_ticker("VOO", start=date(2024, 1, 1), end=date(2024, 1, 5))
-    with pytest.raises(ValueError, match="already cached"):
+    with pytest.raises(ValueError, match="already in the UI"):
         tickers.add_ticker("VOO", start=date(2024, 1, 1), end=date(2024, 1, 5))
 
 

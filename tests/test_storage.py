@@ -284,12 +284,17 @@ def test_list_cached_tickers_excludes_metadata():
     assert cached == ["FXAIX", "VOO"]   # sorted, no _metadata
 
 
-def test_remove_ticker_deletes_file_and_metadata():
+def test_remove_ticker_removes_metadata_keeps_price_file():
     storage.upsert_ticker_prices("VOO", _sample_prices([("2024-01-02", 100.0)]))
+    storage.upsert_ticker_metadata("VOO", price_type="close", close_only=False)
     storage.remove_ticker("VOO")
 
-    assert storage.list_cached_tickers() == []
+    # Metadata is gone (ticker no longer shows in UI).
     assert storage.get_ticker_metadata("VOO") is None
+    # But price file is still on disk so re-adding can skip the full fetch.
+    assert not storage.load_ticker_prices("VOO").is_empty()
+    # list_cached_tickers scans price files, so VOO still appears there.
+    assert "VOO" in storage.list_cached_tickers()
 
 
 # ---------------------------------------------------------------------------

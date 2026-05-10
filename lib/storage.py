@@ -529,9 +529,7 @@ def _refresh_ticker_metadata_dates(ticker: str, prices_df: pl.DataFrame) -> None
 
 
 def remove_ticker(ticker: str) -> None:
-    """Delete a ticker's cached prices and metadata row."""
-    path = _ticker_path(ticker)
-    if path.exists():
-        path.unlink()
+    """Remove a ticker from the UI (metadata only). Price file is kept on disk
+    so re-adding the ticker can refresh from where it left off."""
     meta = load_ticker_metadata().filter(pl.col("ticker") != ticker.upper())
     save_ticker_metadata(meta)
