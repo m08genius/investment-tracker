@@ -342,6 +342,36 @@ def get_account(account_id: str) -> dict | None:
     return df.row(0, named=True)
 
 
+def update_account(
+    account_id: str,
+    *,
+    security: str | None = None,
+    group_name: str | None = None,
+) -> None:
+    """Update editable fields of an account. Pass only the fields to change."""
+    accounts = load_accounts()
+    idx = accounts["account_id"].to_list().index(account_id) if account_id in accounts["account_id"].to_list() else None
+    if idx is None:
+        raise ValueError(f"Account {account_id!r} not found.")
+    if security is not None:
+        security = security.strip()
+        if not security:
+            raise ValueError("Security name cannot be empty.")
+        save_accounts(accounts.with_columns(
+            pl.when(pl.col("account_id") == account_id)
+            .then(pl.lit(security))
+            .otherwise(pl.col("security"))
+            .alias("security")
+        ))
+    if group_name is not None:
+        save_accounts(load_accounts().with_columns(
+            pl.when(pl.col("account_id") == account_id)
+            .then(pl.lit(group_name.strip()))
+            .otherwise(pl.col("group_name"))
+            .alias("group_name")
+        ))
+
+
 # ---------------------------------------------------------------------------
 # Entries (cash flows + optional snapshot)
 # ---------------------------------------------------------------------------

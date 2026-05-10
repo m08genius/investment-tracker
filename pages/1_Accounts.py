@@ -592,10 +592,30 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Delete security
+# Edit security
 # ---------------------------------------------------------------------------
 
 st.divider()
+with st.expander("✏️ Edit security"):
+    with st.form("edit_security_form"):
+        new_security_name = st.text_input("Security name", value=selected_security)
+        new_group_name = st.text_input("Account group", value=selected_group)
+        if st.form_submit_button("Save changes"):
+            try:
+                storage.update_account(
+                    selected_id,
+                    security=new_security_name,
+                    group_name=new_group_name,
+                )
+                st.success("Security updated.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+# ---------------------------------------------------------------------------
+# Delete security
+# ---------------------------------------------------------------------------
+
 if st.button(f"Delete {selected_security}", type="secondary"):
     st.session_state["confirm_del_account"] = True
 
