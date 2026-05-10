@@ -28,8 +28,9 @@ if accounts.is_empty():
     st.info("No accounts yet. Head to **Accounts** to create one.")
     st.stop()
 
-all_account_ids  = [r["account_id"] for r in accounts.iter_rows(named=True)]
-all_account_names = {r["account_id"]: r["security"] for r in accounts.iter_rows(named=True)}
+all_account_ids   = [r["account_id"] for r in accounts.iter_rows(named=True)]
+all_account_names = {r["account_id"]: r["security"]  for r in accounts.iter_rows(named=True)}
+all_account_info  = {r["account_id"]: r               for r in accounts.iter_rows(named=True)}
 
 # ---------------------------------------------------------------------------
 # Ticker selection + options
@@ -137,6 +138,8 @@ for row in accounts.iter_rows(named=True):
     aid = row["account_id"]
     name = row["security"]
     group = row["group_name"]
+    is_ticker = row["is_ticker"]
+    ticker_sym = row["ticker"]
 
     entries = storage.load_entries(aid)
     cash_flows: list[tuple[date, float]] = [
@@ -144,15 +147,26 @@ for row in accounts.iter_rows(named=True):
         for d, a in zip(entries["entry_time"].to_list(), entries["amount"].to_list())
         if float(a) != 0.0
     ]
-    latest = storage.get_latest_snapshot(aid)
+
+    # Determine current portfolio value and the date it applies to.
+    # Ticker accounts: computed live as total_shares × today's close price.
+    # Generic accounts: fall back to the most recent stored snapshot.
+    current_val: float | None = None
+    current_val_date: date = valuation_date
+    if is_ticker and ticker_sym:
+        total_shares = float(entries["shares"].sum() or 0.0)
+        close_price = storage.get_ticker_price_on_date(ticker_sym, valuation_date, "close")
+        if close_price is not None:
+            current_val = total_shares * close_price
+    else:
+        latest = storage.get_latest_snapshot(aid)
+        if latest is not None:
+            current_val = float(latest["value"])
+            current_val_date = date.fromisoformat(latest["as_of_date"])
 
     own_mwrr = None
-    if latest is not None:
-        own_mwrr = returns.compute_mwrr(
-            cash_flows,
-            float(latest["value"]),
-            date.fromisoformat(latest["as_of_date"]),
-        )
+    if current_val is not None:
+        own_mwrr = returns.compute_mwrr(cash_flows, current_val, current_val_date)
 
     row_data: dict = {"Account Group": group, "Account": name, "Own MWRR": own_mwrr}
 
@@ -162,6 +176,13 @@ for row in accounts.iter_rows(named=True):
             (date.fromisoformat(r["as_of_date"]), float(r["value"]))
             for r in storage.load_snapshots(aid).iter_rows(named=True)
         ]
+        # For ticker accounts append/replace the current computed value so TWRR
+        # always terminates at the live portfolio value rather than a stale snapshot.
+        if is_ticker and ticker_sym and current_val is not None:
+            if snaps and snaps[-1][0] == current_val_date:
+                snaps[-1] = (current_val_date, current_val)
+            else:
+                snaps.append((current_val_date, current_val))
         row_data["Own TWRR"] = returns.compute_twrr(snaps, cash_flows)
 
     for tk in selected_tickers:
@@ -220,18 +241,28 @@ else:
     agg_warnings: list[str] = []
 
     for aid in selected_agg_ids:
+        acct = all_account_info[aid]
         entries = storage.load_entries(aid)
         cash_flows = [
             (date.fromisoformat(d), float(a))
             for d, a in zip(entries["entry_time"].to_list(), entries["amount"].to_list())
             if float(a) != 0.0
         ]
-        latest = storage.get_latest_snapshot(aid)
-        if latest is None:
-            missing.append(all_account_names[aid])
+        if acct["is_ticker"] and acct["ticker"]:
+            total_shares = float(entries["shares"].sum() or 0.0)
+            close_price = storage.get_ticker_price_on_date(acct["ticker"], valuation_date, "close")
+            if close_price is not None:
+                agg_flows.extend(cash_flows)
+                agg_value += total_shares * close_price
+            else:
+                missing.append(all_account_names[aid])
         else:
-            agg_flows.extend(cash_flows)
-            agg_value += float(latest["value"])
+            latest = storage.get_latest_snapshot(aid)
+            if latest is None:
+                missing.append(all_account_names[aid])
+            else:
+                agg_flows.extend(cash_flows)
+                agg_value += float(latest["value"])
 
     if missing:
         st.caption(
