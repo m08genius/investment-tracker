@@ -19,7 +19,7 @@ st.set_page_config(page_title="View Performance", page_icon="📈", layout="wide
 st.title("📈 View Performance")
 
 st.caption(
-    "Snapshot entries are added on the **Accounts** page (Snapshot entries tab). "
+    "Snapshot entries are added on the **Accounts** page. "
     "MWRR uses the most recent snapshot; TWRR uses all snapshots over time."
 )
 
@@ -28,6 +28,8 @@ if accounts.is_empty():
     st.info("No accounts yet. Head to **Accounts** to create one.")
     st.stop()
 
+all_account_ids  = [r["account_id"] for r in accounts.iter_rows(named=True)]
+all_account_names = {r["account_id"]: r["name"] for r in accounts.iter_rows(named=True)}
 
 # ---------------------------------------------------------------------------
 # Ticker selection + options
@@ -35,9 +37,6 @@ if accounts.is_empty():
 
 cached_tickers = storage.list_active_tickers()
 
-# perf_tickers_saved / perf_twrr_saved are non-widget keys that survive page navigation.
-# perf_tickers_widget / perf_twrr_widget are widget keys managed by Streamlit within the page.
-# On first render after navigation the widget keys are absent, so we seed them from the saved keys.
 if "perf_tickers_saved" not in st.session_state:
     st.session_state["perf_tickers_saved"] = cached_tickers[:1] if cached_tickers else []
 if "perf_twrr_saved" not in st.session_state:
@@ -86,16 +85,53 @@ def _fmt(x: object) -> str:
     return f"{float(x) * 100:.2f}%"
 
 
+def _render_table(rows: list[dict], warnings: list[str]) -> None:
+    df = pd.DataFrame(rows)
+    rate_cols = [c for c in df.columns if c != "Account"]
+    df[rate_cols] = df[rate_cols].astype(float)
+
+    mwrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "MWRR" in c]
+    twrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "TWRR" in c]
+
+    def _color_row(row: pd.Series) -> list[str]:
+        styles = [""] * len(row)
+        col_idx = {c: i for i, c in enumerate(row.index)}
+        own_mwrr = row.get("Own MWRR")
+        own_twrr = row.get("Own TWRR") if "Own TWRR" in row.index else float("nan")
+        for col in mwrr_ticker_cols:
+            val = row[col]
+            if pd.isna(val) or pd.isna(own_mwrr):
+                continue
+            styles[col_idx[col]] = _GREEN if val > own_mwrr else (_RED if val < own_mwrr else "")
+        for col in twrr_ticker_cols:
+            val = row[col]
+            if pd.isna(val) or pd.isna(own_twrr):
+                continue
+            styles[col_idx[col]] = _GREEN if val > own_twrr else (_RED if val < own_twrr else "")
+        return styles
+
+    fmt_dict = {col: _fmt for col in rate_cols}
+    styled = df.style.apply(_color_row, axis=1).format(fmt_dict, na_rep="—")
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    if warnings:
+        seen: set[str] = set()
+        deduped = [w for w in warnings if not (w in seen or seen.add(w))]  # type: ignore[func-returns-value]
+        with st.expander(f"⚠️ {len(deduped)} warning{'s' if len(deduped) != 1 else ''}"):
+            for w in deduped[:50]:
+                st.caption(w)
+            if len(deduped) > 50:
+                st.caption(f"_...and {len(deduped) - 50} more._")
+
+
 # ---------------------------------------------------------------------------
-# Build the comparison table (raw floats, None for missing)
+# Per-account table
 # ---------------------------------------------------------------------------
+
+st.subheader("Per-account")
 
 rows: list[dict] = []
 all_warnings: list[str] = []
-
-aggregate_flows: list[tuple[date, float]] = []
-aggregate_value = 0.0
-aggregate_eligible = True
 
 for row in accounts.iter_rows(named=True):
     aid = row["account_id"]
@@ -109,17 +145,13 @@ for row in accounts.iter_rows(named=True):
     ]
     latest = storage.get_latest_snapshot(aid)
 
-    if latest is None:
-        aggregate_eligible = False
-        own_mwrr = None
-    else:
+    own_mwrr = None
+    if latest is not None:
         own_mwrr = returns.compute_mwrr(
             cash_flows,
             float(latest["value"]),
             date.fromisoformat(latest["as_of_date"]),
         )
-        aggregate_flows.extend(cash_flows)
-        aggregate_value += float(latest["value"])
 
     row_data: dict = {"Account": name, "Own MWRR": own_mwrr}
 
@@ -147,103 +179,94 @@ for row in accounts.iter_rows(named=True):
 
     rows.append(row_data)
 
-
-# Aggregate row (TWRR always None — not meaningful across accounts)
-agg_own_mwrr: float | None = None
-if aggregate_eligible and aggregate_flows:
-    agg_own_mwrr = returns.compute_mwrr(aggregate_flows, aggregate_value, valuation_date)
-
-agg_row: dict = {"Account": "All accounts (aggregate)", "Own MWRR": agg_own_mwrr}
-if show_twrr:
-    agg_row["Own TWRR"] = None
-
-for tk in selected_tickers:
-    if aggregate_eligible and aggregate_flows:
-        rate, warns = simulation.compute_ticker_comparison_mwrr(
-            aggregate_flows, tk, valuation_date,
-        )
-        agg_row[f"{tk} MWRR"] = rate
-        for w in warns:
-            all_warnings.append(f"[Aggregate vs {tk}] {w}")
-    else:
-        agg_row[f"{tk} MWRR"] = None
-    if show_twrr:
-        agg_row[f"{tk} TWRR"] = None
-
-rows.append(agg_row)
-
-
-# ---------------------------------------------------------------------------
-# Style and display
-# ---------------------------------------------------------------------------
-
-df = pd.DataFrame(rows)
-rate_cols = [c for c in df.columns if c != "Account"]
-
-# Replace Python None with NaN so pandas handles it uniformly.
-df[rate_cols] = df[rate_cols].astype(float)
-
-mwrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "MWRR" in c]
-twrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "TWRR" in c]
-
-
-def _color_row(row: pd.Series) -> list[str]:
-    styles = [""] * len(row)
-    col_idx = {c: i for i, c in enumerate(row.index)}
-
-    own_mwrr = row.get("Own MWRR")
-    own_twrr = row.get("Own TWRR") if "Own TWRR" in row.index else float("nan")
-
-    for col in mwrr_ticker_cols:
-        val = row[col]
-        if pd.isna(val) or pd.isna(own_mwrr):
-            continue
-        styles[col_idx[col]] = _GREEN if val > own_mwrr else (_RED if val < own_mwrr else "")
-
-    for col in twrr_ticker_cols:
-        val = row[col]
-        if pd.isna(val) or pd.isna(own_twrr):
-            continue
-        styles[col_idx[col]] = _GREEN if val > own_twrr else (_RED if val < own_twrr else "")
-
-    return styles
-
-
-fmt_dict = {col: _fmt for col in rate_cols}
-styled = df.style.apply(_color_row, axis=1).format(fmt_dict, na_rep="—")
-
-st.dataframe(styled, use_container_width=True, hide_index=True)
+_render_table(rows, all_warnings)
 
 if show_twrr:
     st.caption(
         "TWRR shows '—' when an account has fewer than 2 snapshots. "
-        "Aggregate TWRR is not computed — it is not meaningful across accounts."
     )
 
-if not aggregate_eligible:
-    n_missing = sum(
-        1 for r in accounts.iter_rows(named=True)
-        if storage.get_latest_current_value(r["account_id"]) is None
-    )
-    st.caption(
-        f"_Aggregate row unavailable: {n_missing} of {accounts.height} accounts "
-        f"are missing a snapshot entry._"
-    )
 
-# Show warnings (deduplicated, capped)
-if all_warnings:
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for w in all_warnings:
-        if w not in seen:
-            seen.add(w)
-            deduped.append(w)
+# ---------------------------------------------------------------------------
+# Aggregate section
+# ---------------------------------------------------------------------------
 
-    with st.expander(f"⚠️ {len(deduped)} warning{'s' if len(deduped) != 1 else ''}"):
-        for w in deduped[:50]:
-            st.caption(w)
-        if len(deduped) > 50:
-            st.caption(f"_...and {len(deduped) - 50} more._")
+st.divider()
+st.subheader("Aggregate")
+
+# Sticky multiselect for accounts included in aggregate.
+if "perf_agg_saved" not in st.session_state:
+    st.session_state["perf_agg_saved"] = all_account_ids
+if "perf_agg_widget" not in st.session_state:
+    valid_saved = [a for a in st.session_state["perf_agg_saved"] if a in all_account_ids]
+    st.session_state["perf_agg_widget"] = valid_saved
+
+selected_agg_ids: list[str] = st.multiselect(
+    "Accounts to include",
+    options=all_account_ids,
+    format_func=lambda aid: all_account_names[aid],
+    key="perf_agg_widget",
+    help="Choose which accounts to roll up into the aggregate row.",
+)
+st.session_state["perf_agg_saved"] = selected_agg_ids
+
+if not selected_agg_ids:
+    st.caption("Select at least one account above.")
+else:
+    agg_flows: list[tuple[date, float]] = []
+    agg_value = 0.0
+    missing: list[str] = []
+    agg_warnings: list[str] = []
+
+    for aid in selected_agg_ids:
+        entries = storage.load_entries(aid)
+        cash_flows = [
+            (date.fromisoformat(d), float(a))
+            for d, a in zip(entries["entry_time"].to_list(), entries["amount"].to_list())
+            if float(a) != 0.0
+        ]
+        latest = storage.get_latest_snapshot(aid)
+        if latest is None:
+            missing.append(all_account_names[aid])
+        else:
+            agg_flows.extend(cash_flows)
+            agg_value += float(latest["value"])
+
+    if missing:
+        st.caption(
+            f"_Aggregate excludes **{', '.join(missing)}** — no snapshot recorded._"
+        )
+
+    eligible = not missing or len(missing) < len(selected_agg_ids)
+
+    agg_own_mwrr: float | None = None
+    if eligible and agg_flows:
+        agg_own_mwrr = returns.compute_mwrr(agg_flows, agg_value, valuation_date)
+
+    agg_row: dict = {"Account": "Aggregate", "Own MWRR": agg_own_mwrr}
+    if show_twrr:
+        agg_row["Own TWRR"] = None   # not meaningful across accounts
+
+    for tk in selected_tickers:
+        if eligible and agg_flows:
+            rate, warns = simulation.compute_ticker_comparison_mwrr(
+                agg_flows, tk, valuation_date,
+            )
+            agg_row[f"{tk} MWRR"] = rate
+            for w in warns:
+                agg_warnings.append(f"[Aggregate vs {tk}] {w}")
+        else:
+            agg_row[f"{tk} MWRR"] = None
+        if show_twrr:
+            agg_row[f"{tk} TWRR"] = None   # not meaningful across accounts
+
+    _render_table([agg_row], agg_warnings)
+
+    if show_twrr:
+        st.caption("TWRR is not computed for aggregate — it is not meaningful across accounts.")
+
+    if not agg_flows:
+        st.caption("_No cash flows found for the selected accounts._")
 
 
 # ---------------------------------------------------------------------------

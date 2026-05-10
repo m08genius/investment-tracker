@@ -438,12 +438,12 @@ def set_snapshot(
     account_id: str,
     value: float,
     as_of_date: date | str | None = None,
+    note: str = "",
 ) -> None:
     """
     Record a portfolio snapshot for the given account and date.
-    If an entry (or pure snapshot row) already has snapshot_time == as_of_date
-    for this account, its snapshot_value is updated. Otherwise a new
-    amount=0 row is created.
+    If a row already exists on as_of_date for this account, its snapshot_value
+    (and note, if provided) are updated. Otherwise a new amount=0 row is created.
     """
     if get_account(account_id) is None:
         raise ValueError(f"No account with id {account_id!r}.")
@@ -456,12 +456,20 @@ def set_snapshot(
     mask = (pl.col("account_id") == account_id) & (pl.col("entry_time") == date_str)
 
     if df.filter(mask).height > 0:
-        df = df.with_columns(
+        updates = [
             pl.when(mask)
             .then(pl.lit(float(value)))
             .otherwise(pl.col("snapshot_value"))
             .alias("snapshot_value")
-        )
+        ]
+        if note.strip():
+            updates.append(
+                pl.when(mask)
+                .then(pl.lit(note.strip()))
+                .otherwise(pl.col("note"))
+                .alias("note")
+            )
+        df = df.with_columns(updates)
     else:
         new_row = pl.DataFrame(
             {
@@ -469,7 +477,7 @@ def set_snapshot(
                 "account_id": [account_id],
                 "amount": [0.0],
                 "entry_time": [date_str],
-                "note": [""],
+                "note": [note.strip()],
                 "snapshot_value": [float(value)],
             },
             schema=ENTRIES_SCHEMA,

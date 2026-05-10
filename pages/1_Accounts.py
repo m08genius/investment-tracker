@@ -133,15 +133,17 @@ with st.expander("➕ Add entry", expanded=True):
         )
         amount_str = c2.text_input(
             "Deposit (+) / Withdrawal (−)",
+            value=_last.get("amount_str", ""),
             placeholder="e.g. 1,000.00 or -500.00",
             help="Positive for deposit, negative for withdrawal. Leave blank for snapshot-only.",
         )
         snap_val_str = c3.text_input(
             "Portfolio value ($)",
+            value=_last.get("snap_val_str", ""),
             placeholder="e.g. 12,345.67",
             help="Total market value of this account. Leave blank for cash-flow-only.",
         )
-        note = st.text_input("Note (optional)")
+        note = st.text_input("Note (optional)", value=_last.get("note", ""))
 
         if st.form_submit_button("Save", type="primary"):
             try:
@@ -162,10 +164,15 @@ with st.expander("➕ Add entry", expanded=True):
                         parts.append(f"snapshot ${snap_val:,.2f}")
                     msg = " + ".join(parts) + f" on {entry_date.isoformat()}."
                 else:
-                    storage.set_snapshot(selected_id, snap_val, entry_date)
+                    storage.set_snapshot(selected_id, snap_val, entry_date, note)
                     msg = f"Snapshot of ${snap_val:,.2f} on {entry_date.isoformat()}."
 
-                st.session_state["last_entry"] = {"entry_date": entry_date}
+                st.session_state["last_entry"] = {
+                    "entry_date": entry_date,
+                    "amount_str": amount_str,
+                    "snap_val_str": snap_val_str,
+                    "note": note,
+                }
                 st.success(msg)
                 st.rerun()
             except ValueError as e:
