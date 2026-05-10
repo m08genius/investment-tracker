@@ -4,7 +4,7 @@ Accounts page: manage account groups and securities, record entries.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import polars as pl
 import streamlit as st
@@ -660,7 +660,14 @@ with st.expander("📋 Bulk import from CSV / TSV"):
                     _date_raw = (_row.get(_map_date) or "").strip() if _map_date != _SKIP else ""
                     if not _date_raw:
                         _skip_msgs.append(f"Row {_lineno}: date missing"); continue
-                    _entry_dt = pd.to_datetime(_date_raw).date()
+                    # Try common date formats
+                    for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                        try:
+                            _entry_dt = datetime.strptime(_date_raw, _fmt).date(); break
+                        except ValueError:
+                            pass
+                    else:
+                        raise ValueError(f"unrecognised date format: {_date_raw!r}")
 
                     def _num(col):
                         v = (_row.get(col) or "").strip().replace("$","").replace(",","")
