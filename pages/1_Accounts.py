@@ -84,8 +84,10 @@ else:
                     st.rerun()
 
 # ---------------------------------------------------------------------------
-# Add a new security
+# Add / Edit security
 # ---------------------------------------------------------------------------
+
+st.divider()
 
 with st.expander("➕ Add a new security"):
     # All conditional widgets outside the form so they trigger reruns immediately.
@@ -101,7 +103,6 @@ with st.expander("➕ Add a new security"):
     )
     st.session_state["new_sec_is_ticker"] = (is_ticker_toggle == "Ticker")
 
-    # Group dropdown with "New group..." option — outside form for live rerun.
     _add_existing_groups = storage.list_account_groups()
     _add_group_options = _add_existing_groups + (["+ New group..."] if _add_existing_groups else [])
     _add_group_sel = st.selectbox(
@@ -158,7 +159,6 @@ with st.expander("➕ Add a new security"):
             except ValueError as e:
                 st.error(str(e))
 
-
 # ---------------------------------------------------------------------------
 # Per-security section
 # ---------------------------------------------------------------------------
@@ -172,6 +172,82 @@ selected_security = selected_acct["security"]
 selected_group = selected_acct["group_name"]
 is_ticker_acct = selected_acct["is_ticker"]
 ticker_symbol = selected_acct["ticker"]
+
+# Edit security (grouped with Add, displayed before per-security detail)
+_edit_ticker_key = f"edit_is_ticker_{selected_id}"
+if _edit_ticker_key not in st.session_state:
+    st.session_state[_edit_ticker_key] = is_ticker_acct
+
+with st.expander("✏️ Edit security"):
+    _edit_type = st.radio(
+        "Security type",
+        ["Generic", "Ticker"],
+        index=1 if st.session_state[_edit_ticker_key] else 0,
+        key=f"edit_type_radio_{selected_id}",
+        horizontal=True,
+    )
+    st.session_state[_edit_ticker_key] = (_edit_type == "Ticker")
+
+    _edit_existing_groups = storage.list_account_groups()
+    _edit_group_options = _edit_existing_groups + (["+ New group..."] if _edit_existing_groups else [])
+    _edit_group_default = (
+        selected_group if selected_group in _edit_existing_groups else "+ New group..."
+    )
+    _edit_group_sel = st.selectbox(
+        "Account Group",
+        options=_edit_group_options if _edit_group_options else ["+ New group..."],
+        index=(_edit_group_options.index(_edit_group_default)
+               if _edit_group_default in _edit_group_options else 0),
+        key=f"edit_group_sel_{selected_id}",
+    )
+    _edit_new_group_str = ""
+    if _edit_group_sel == "+ New group...":
+        _edit_new_group_str = st.text_input(
+            "New group name",
+            value=selected_group if selected_group not in _edit_existing_groups else "",
+            key=f"edit_group_text_{selected_id}",
+        )
+
+    with st.form("edit_security_form"):
+        new_security_name = st.text_input("Security name", value=selected_security)
+
+        new_ticker_val = ticker_symbol
+        if st.session_state[_edit_ticker_key]:
+            cached_tickers = storage.list_active_tickers()
+            if not cached_tickers:
+                st.warning("No tickers cached yet. Visit **Ticker Data** to add one.")
+                new_ticker_val = ""
+            else:
+                _ticker_opts = [""] + cached_tickers
+                _ticker_default_idx = (
+                    _ticker_opts.index(ticker_symbol)
+                    if ticker_symbol in _ticker_opts else 0
+                )
+                new_ticker_val = st.selectbox(
+                    "Ticker symbol",
+                    options=_ticker_opts,
+                    index=_ticker_default_idx,
+                    format_func=lambda t: t if t else "— select —",
+                )
+
+        if st.form_submit_button("Save changes"):
+            try:
+                _edit_is_ticker = st.session_state[_edit_ticker_key]
+                _edit_group = (
+                    _edit_new_group_str if _edit_group_sel == "+ New group..."
+                    else _edit_group_sel
+                )
+                storage.update_account(
+                    selected_id,
+                    security=new_security_name,
+                    group_name=_edit_group,
+                    is_ticker=_edit_is_ticker,
+                    ticker=new_ticker_val if _edit_is_ticker else "",
+                )
+                st.success("Security updated.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
 
 st.divider()
 st.header(f"{selected_group} — {selected_security}")
@@ -603,87 +679,6 @@ else:
         st.success(f"Deleted {n_selected} {'entry' if n_selected == 1 else 'entries'}.")
         st.rerun()
 
-
-# ---------------------------------------------------------------------------
-# Edit security
-# ---------------------------------------------------------------------------
-
-st.divider()
-with st.expander("✏️ Edit security"):
-    # is_ticker toggle and group dropdown outside any form so they trigger reruns.
-    _edit_ticker_key = f"edit_is_ticker_{selected_id}"
-    if _edit_ticker_key not in st.session_state:
-        st.session_state[_edit_ticker_key] = is_ticker_acct
-
-    _edit_type = st.radio(
-        "Security type",
-        ["Generic", "Ticker"],
-        index=1 if st.session_state[_edit_ticker_key] else 0,
-        key=f"edit_type_radio_{selected_id}",
-        horizontal=True,
-    )
-    st.session_state[_edit_ticker_key] = (_edit_type == "Ticker")
-
-    _edit_existing_groups = storage.list_account_groups()
-    _edit_group_options = _edit_existing_groups + (["+ New group..."] if _edit_existing_groups else [])
-    _edit_group_default = (
-        selected_group if selected_group in _edit_existing_groups else "+ New group..."
-    )
-    _edit_group_sel = st.selectbox(
-        "Account Group",
-        options=_edit_group_options if _edit_group_options else ["+ New group..."],
-        index=(_edit_group_options.index(_edit_group_default)
-               if _edit_group_default in _edit_group_options else 0),
-        key=f"edit_group_sel_{selected_id}",
-    )
-    _edit_new_group_str = ""
-    if _edit_group_sel == "+ New group...":
-        _edit_new_group_str = st.text_input(
-            "New group name",
-            value=selected_group if selected_group not in _edit_existing_groups else "",
-            key=f"edit_group_text_{selected_id}",
-        )
-
-    with st.form("edit_security_form"):
-        new_security_name = st.text_input("Security name", value=selected_security)
-
-        new_ticker_val = ticker_symbol
-        if st.session_state[_edit_ticker_key]:
-            cached_tickers = storage.list_active_tickers()
-            if not cached_tickers:
-                st.warning("No tickers cached yet. Visit **Ticker Data** to add one.")
-                new_ticker_val = ""
-            else:
-                _ticker_opts = [""] + cached_tickers
-                _ticker_default_idx = (
-                    _ticker_opts.index(ticker_symbol)
-                    if ticker_symbol in _ticker_opts else 0
-                )
-                new_ticker_val = st.selectbox(
-                    "Ticker symbol",
-                    options=_ticker_opts,
-                    index=_ticker_default_idx,
-                    format_func=lambda t: t if t else "— select —",
-                )
-
-        if st.form_submit_button("Save changes"):
-            try:
-                _edit_is_ticker = st.session_state[_edit_ticker_key]
-                _edit_group = (
-                    _edit_new_group_str if _edit_group_sel == "+ New group..."
-                    else _edit_group_sel
-                )
-                storage.update_account(
-                    selected_id,
-                    security=new_security_name,
-                    group_name=_edit_group,
-                    is_ticker=_edit_is_ticker,
-                    ticker=new_ticker_val if _edit_is_ticker else "",
-                )
-                st.success("Security updated.")
-                st.rerun()
-            except ValueError as e:
-                st.error(str(e))
 
 # ---------------------------------------------------------------------------
 # Delete security
