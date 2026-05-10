@@ -766,7 +766,7 @@ else:
             .otherwise(pl.lit(""))
             .alias("Total Value")
         )
-        _base = all_entries.with_column(_tv_series)
+        _base = all_entries.with_columns(_tv_series)
     else:
         _tv_col = (
             pl.when(pl.col("snapshot_value").is_not_null())
