@@ -348,14 +348,19 @@ else:
           .alias("Type"),
         pl.when(pl.col("amount") != 0.0)
           .then(pl.col("amount").abs().map_elements(lambda x: f"${x:,.2f}", return_dtype=pl.Utf8))
-          .otherwise(pl.col("snapshot_value").map_elements(lambda x: f"${x:,.2f}" if x is not None else "", return_dtype=pl.Utf8))
+          .otherwise(pl.lit(""))
           .alias("Amount"),
+        pl.when(pl.col("amount") == 0.0)
+          .then(pl.col("snapshot_value").map_elements(lambda x: f"${x:,.2f}" if x is not None else "", return_dtype=pl.Utf8))
+          .otherwise(pl.lit(""))
+          .alias("Total Value"),
         pl.lit(False).alias("__delete"),
     ).select(
         pl.col("__delete").alias("Delete?"),
         pl.col("entry_time").alias("Date"),
         pl.col("Type"),
         pl.col("Amount"),
+        pl.col("Total Value"),
         pl.col("note").alias("Note"),
         pl.col("entry_id"),
     )
@@ -367,6 +372,7 @@ else:
             "Date": st.column_config.TextColumn(disabled=True),
             "Type": st.column_config.TextColumn(disabled=True),
             "Amount": st.column_config.TextColumn(disabled=True),
+            "Total Value": st.column_config.TextColumn(disabled=True),
             "Note": st.column_config.TextColumn(disabled=True),
             "entry_id": None,
         },
