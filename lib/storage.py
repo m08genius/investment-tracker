@@ -62,18 +62,22 @@ def set_data_dir(path: str | Path) -> None:
 
 ACCOUNTS_SCHEMA: dict[str, pl.DataType] = {
     "account_id": pl.Utf8,
-    "name": pl.Utf8,
-    "description": pl.Utf8,
+    "group_name": pl.Utf8,    # "Account Group"
+    "security":   pl.Utf8,    # "Security Name"
+    "is_ticker":  pl.Boolean, # True = ticker security
+    "ticker":     pl.Utf8,    # ticker symbol when is_ticker=True, "" otherwise
     "created_at": pl.Utf8,
 }
 
 ENTRIES_SCHEMA: dict[str, pl.DataType] = {
-    "entry_id":       pl.Utf8,
-    "account_id":     pl.Utf8,
-    "amount":         pl.Float64,
-    "entry_time":     pl.Utf8,
-    "note":           pl.Utf8,
-    "snapshot_value": pl.Float64,
+    "entry_id":        pl.Utf8,
+    "account_id":      pl.Utf8,
+    "amount":          pl.Float64,
+    "entry_time":      pl.Utf8,
+    "note":            pl.Utf8,
+    "snapshot_value":  pl.Float64,
+    "shares":          pl.Float64,
+    "price_per_share": pl.Float64,
 }
 
 TICKER_PRICES_SCHEMA: dict[str, pl.DataType] = {
@@ -140,6 +144,57 @@ def _coerce_date(d: date | str) -> date:
 # One-time migration: current_values.csv → entries.csv snapshot columns
 # ---------------------------------------------------------------------------
 
+def _maybe_migrate_accounts_schema() -> None:
+    """
+    If accounts.csv has the old schema (name + description columns), rename:
+      name        → security
+      description → group_name
+    and add is_ticker=False, ticker="" columns.
+    """
+    if not ACCOUNTS_PATH.exists():
+        return
+    df = pl.read_csv(ACCOUNTS_PATH)
+    if "name" not in df.columns and "description" not in df.columns:
+        return
+    # Rename old columns
+    if "name" in df.columns:
+        df = df.rename({"name": "security"})
+    if "description" in df.columns:
+        df = df.rename({"description": "group_name"})
+    # Add new columns if missing
+    if "is_ticker" not in df.columns:
+        df = df.with_columns(pl.lit(False).alias("is_ticker"))
+    if "ticker" not in df.columns:
+        df = df.with_columns(pl.lit("").alias("ticker"))
+    _atomic_write_csv(df.select(list(ACCOUNTS_SCHEMA.keys())), ACCOUNTS_PATH)
+
+
+def _maybe_migrate_entries_add_share_columns() -> None:
+    """
+    If entries.csv lacks shares/price_per_share columns, back-fill them:
+      shares          = 1.0
+      price_per_share = abs(amount)   (preserves existing dollar values)
+    Pure snapshot rows (amount=0) get shares=0, price_per_share=0.
+    """
+    if not ENTRIES_PATH.exists():
+        return
+    df = pl.read_csv(ENTRIES_PATH)
+    if "shares" in df.columns and "price_per_share" in df.columns:
+        return
+    if "shares" not in df.columns:
+        df = df.with_columns(
+            pl.when(pl.col("amount") != 0.0)
+            .then(pl.lit(1.0))
+            .otherwise(pl.lit(0.0))
+            .alias("shares")
+        )
+    if "price_per_share" not in df.columns:
+        df = df.with_columns(
+            pl.col("amount").abs().alias("price_per_share")
+        )
+    _atomic_write_csv(df.select(list(ENTRIES_SCHEMA.keys())), ENTRIES_PATH)
+
+
 def _maybe_drop_snapshot_time_column() -> None:
     """If entries.csv has the legacy snapshot_time column, drop it and rewrite."""
     if not ENTRIES_PATH.exists():
@@ -188,12 +243,14 @@ def _maybe_migrate_current_values() -> None:
             # No matching entry — create a pure snapshot row (amount=0).
             new_row = pl.DataFrame(
                 {
-                    "entry_id": [_new_id()],
-                    "account_id": [aid],
-                    "amount": [0.0],
-                    "entry_time": [date_str],
-                    "note": [""],
-                    "snapshot_value": [value],
+                    "entry_id":        [_new_id()],
+                    "account_id":      [aid],
+                    "amount":          [0.0],
+                    "entry_time":      [date_str],
+                    "note":            [""],
+                    "snapshot_value":  [value],
+                    "shares":          [0.0],
+                    "price_per_share": [0.0],
                 },
                 schema=ENTRIES_SCHEMA,
             )
@@ -209,6 +266,7 @@ def _maybe_migrate_current_values() -> None:
 
 def load_accounts() -> pl.DataFrame:
     """Load all accounts."""
+    _maybe_migrate_accounts_schema()
     return _read_or_empty(ACCOUNTS_PATH, ACCOUNTS_SCHEMA)
 
 
@@ -217,23 +275,46 @@ def save_accounts(df: pl.DataFrame) -> None:
     _atomic_write_csv(df.select(list(ACCOUNTS_SCHEMA.keys())), ACCOUNTS_PATH)
 
 
-def add_account(name: str, description: str = "") -> str:
-    """Create a new account; returns its account_id."""
-    name = name.strip()
-    if not name:
-        raise ValueError("Account name cannot be empty.")
+def add_account(
+    group_name: str,
+    security: str,
+    is_ticker: bool = False,
+    ticker: str = "",
+) -> str:
+    """
+    Create a new security under an account group. Returns its account_id.
+    group_name: the Account Group label (e.g. "Fidelity Brokerage").
+    security:   the Security Name (e.g. "FXAIX", "Cash").
+    is_ticker:  True if this security is a ticker with cached price data.
+    ticker:     the ticker symbol when is_ticker=True.
+    """
+    group_name = group_name.strip()
+    security = security.strip()
+    if not group_name:
+        raise ValueError("Account Group cannot be empty.")
+    if not security:
+        raise ValueError("Security name cannot be empty.")
+    if is_ticker and not ticker.strip():
+        raise ValueError("Ticker symbol required when is_ticker=True.")
 
     accounts = load_accounts()
-    existing = {n.lower() for n in accounts["name"].to_list()}
-    if name.lower() in existing:
-        raise ValueError(f"An account named {name!r} already exists.")
+    existing_pairs = {
+        (r["group_name"].lower(), r["security"].lower())
+        for r in accounts.iter_rows(named=True)
+    }
+    if (group_name.lower(), security.lower()) in existing_pairs:
+        raise ValueError(
+            f"A security named {security!r} already exists in group {group_name!r}."
+        )
 
     new_id = _new_id()
     new_row = pl.DataFrame(
         {
             "account_id": [new_id],
-            "name": [name],
-            "description": [description.strip()],
+            "group_name": [group_name],
+            "security":   [security],
+            "is_ticker":  [bool(is_ticker)],
+            "ticker":     [ticker.strip().upper() if is_ticker else ""],
             "created_at": [_now_iso()],
         },
         schema=ACCOUNTS_SCHEMA,
@@ -269,6 +350,7 @@ def load_entries(account_id: str | None = None) -> pl.DataFrame:
     """Load entries, optionally filtered to one account, sorted by entry_time."""
     _maybe_drop_snapshot_time_column()
     _maybe_migrate_current_values()
+    _maybe_migrate_entries_add_share_columns()
     df = _read_or_empty(ENTRIES_PATH, ENTRIES_SCHEMA)
     if account_id is not None:
         df = df.filter(pl.col("account_id") == account_id)
@@ -287,14 +369,19 @@ def add_entry(
     note: str = "",
     *,
     snapshot_value: float | None = None,
+    shares: float | None = None,
+    price_per_share: float | None = None,
 ) -> str:
     """
     Add a cash flow. Sign convention: positive = deposit, negative = withdrawal.
     Future-dated entries are rejected.
 
+    shares and price_per_share are always stored. If not provided they default to
+    1.0 and abs(amount) respectively (for migration compatibility and simple entries).
+    If either is provided, both must be; price_per_share must be > 0.
+
     If a pure snapshot row (amount=0) already exists on entry_date, the cash
     flow is merged into that row rather than creating a duplicate.
-    Optionally attach a portfolio snapshot value (entry_time doubles as snapshot date).
     """
     if get_account(account_id) is None:
         raise ValueError(f"No account with id {account_id!r}.")
@@ -303,11 +390,24 @@ def add_entry(
     if entry_date > date.today():
         raise ValueError("Entry date cannot be in the future.")
 
+    # Resolve shares / price_per_share
+    amt = float(amount)
+    if shares is not None or price_per_share is not None:
+        if shares is None or price_per_share is None:
+            raise ValueError("Provide both shares and price_per_share together.")
+        shares = float(shares)
+        price_per_share = float(price_per_share)
+        if price_per_share <= 0:
+            raise ValueError("price_per_share must be greater than 0.")
+    else:
+        shares = 1.0 if amt != 0.0 else 0.0
+        price_per_share = abs(amt) if amt != 0.0 else 0.0
+
     snap_val = float(snapshot_value) if snapshot_value is not None else None
     existing = load_entries(account_id)
     date_str = entry_date.isoformat()
 
-    if float(amount) != 0.0:
+    if amt != 0.0:
         # Reject if a non-zero entry already occupies this date.
         if existing.filter(
             (pl.col("amount") != 0.0) & (pl.col("entry_time") == date_str)
@@ -332,9 +432,11 @@ def add_entry(
                 & (pl.col("amount") == 0.0)
             )
             df = df.with_columns(
-                pl.when(mask).then(pl.lit(float(amount))).otherwise(pl.col("amount")).alias("amount"),
+                pl.when(mask).then(pl.lit(amt)).otherwise(pl.col("amount")).alias("amount"),
                 pl.when(mask).then(pl.lit(note.strip())).otherwise(pl.col("note")).alias("note"),
                 pl.when(mask).then(then_snap).otherwise(pl.col("snapshot_value")).alias("snapshot_value"),
+                pl.when(mask).then(pl.lit(shares)).otherwise(pl.col("shares")).alias("shares"),
+                pl.when(mask).then(pl.lit(price_per_share)).otherwise(pl.col("price_per_share")).alias("price_per_share"),
             )
             save_entries(df)
             return existing_row["entry_id"]
@@ -342,12 +444,14 @@ def add_entry(
     new_id = _new_id()
     new_row = pl.DataFrame(
         {
-            "entry_id": [new_id],
-            "account_id": [account_id],
-            "amount": [float(amount)],
-            "entry_time": [date_str],
-            "note": [note.strip()],
-            "snapshot_value": [snap_val],
+            "entry_id":        [new_id],
+            "account_id":      [account_id],
+            "amount":          [amt],
+            "entry_time":      [date_str],
+            "note":            [note.strip()],
+            "snapshot_value":  [snap_val],
+            "shares":          [shares],
+            "price_per_share": [price_per_share],
         },
         schema=ENTRIES_SCHEMA,
     )
@@ -375,25 +479,30 @@ def add_entries_bulk(rows: list[dict]) -> list[str]:
     today = date.today()
     new_ids: list[str] = []
     new_records: dict[str, list] = {
-        "entry_id": [],
-        "account_id": [],
-        "amount": [],
-        "entry_time": [],
-        "note": [],
-        "snapshot_value": [],
+        "entry_id":        [],
+        "account_id":      [],
+        "amount":          [],
+        "entry_time":      [],
+        "note":            [],
+        "snapshot_value":  [],
+        "shares":          [],
+        "price_per_share": [],
     }
     for r in rows:
         d = _coerce_date(r["date"])
         if d > today:
             raise ValueError("Entry date cannot be in the future.")
+        amt = float(r["amount"])
         eid = _new_id()
         new_ids.append(eid)
         new_records["entry_id"].append(eid)
         new_records["account_id"].append(r["account_id"])
-        new_records["amount"].append(float(r["amount"]))
+        new_records["amount"].append(amt)
         new_records["entry_time"].append(d.isoformat())
         new_records["note"].append(r.get("note", "").strip())
         new_records["snapshot_value"].append(None)
+        new_records["shares"].append(1.0)
+        new_records["price_per_share"].append(abs(amt))
 
     new_df = pl.DataFrame(new_records, schema=ENTRIES_SCHEMA)
     save_entries(pl.concat([load_entries(), new_df], how="vertical"))
@@ -473,12 +582,14 @@ def set_snapshot(
     else:
         new_row = pl.DataFrame(
             {
-                "entry_id": [_new_id()],
-                "account_id": [account_id],
-                "amount": [0.0],
-                "entry_time": [date_str],
-                "note": [note.strip()],
-                "snapshot_value": [float(value)],
+                "entry_id":        [_new_id()],
+                "account_id":      [account_id],
+                "amount":          [0.0],
+                "entry_time":      [date_str],
+                "note":            [note.strip()],
+                "snapshot_value":  [float(value)],
+                "shares":          [0.0],
+                "price_per_share": [0.0],
             },
             schema=ENTRIES_SCHEMA,
         )
@@ -695,6 +806,28 @@ def _refresh_ticker_metadata_dates(ticker: str, prices_df: pl.DataFrame) -> None
         schema=TICKER_METADATA_SCHEMA,
     )
     save_ticker_metadata(pl.concat([meta, new_row], how="vertical"))
+
+
+def get_ticker_price_on_date(
+    ticker: str, on_date: date | str, price_type: str = "close"
+) -> float | None:
+    """Return the cached price for a ticker on a specific date, or None if not found."""
+    if price_type not in VALID_PRICE_TYPES:
+        raise ValueError(f"price_type must be one of {sorted(VALID_PRICE_TYPES)}, got {price_type!r}")
+    prices = load_ticker_prices(ticker)
+    date_str = _coerce_date(on_date).isoformat()
+    row = prices.filter(pl.col("date") == date_str)
+    if row.is_empty():
+        return None
+    return float(row.row(0, named=True)[price_type])
+
+
+def list_account_groups() -> list[str]:
+    """Return sorted list of distinct group_names across all accounts."""
+    accounts = load_accounts()
+    if accounts.is_empty():
+        return []
+    return sorted(set(accounts["group_name"].to_list()))
 
 
 def remove_ticker(ticker: str) -> None:

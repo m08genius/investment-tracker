@@ -29,7 +29,7 @@ if accounts.is_empty():
     st.stop()
 
 all_account_ids  = [r["account_id"] for r in accounts.iter_rows(named=True)]
-all_account_names = {r["account_id"]: r["name"] for r in accounts.iter_rows(named=True)}
+all_account_names = {r["account_id"]: r["security"] for r in accounts.iter_rows(named=True)}
 
 # ---------------------------------------------------------------------------
 # Ticker selection + options
@@ -87,7 +87,7 @@ def _fmt(x: object) -> str:
 
 def _render_table(rows: list[dict], warnings: list[str]) -> None:
     df = pd.DataFrame(rows)
-    rate_cols = [c for c in df.columns if c != "Account"]
+    rate_cols = [c for c in df.columns if c not in ("Account Group", "Account")]
     df[rate_cols] = df[rate_cols].astype(float)
 
     mwrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "MWRR" in c]
@@ -135,7 +135,8 @@ all_warnings: list[str] = []
 
 for row in accounts.iter_rows(named=True):
     aid = row["account_id"]
-    name = row["name"]
+    name = row["security"]
+    group = row["group_name"]
 
     entries = storage.load_entries(aid)
     cash_flows: list[tuple[date, float]] = [
@@ -153,7 +154,7 @@ for row in accounts.iter_rows(named=True):
             date.fromisoformat(latest["as_of_date"]),
         )
 
-    row_data: dict = {"Account": name, "Own MWRR": own_mwrr}
+    row_data: dict = {"Account Group": group, "Account": name, "Own MWRR": own_mwrr}
 
     snaps: list[tuple[date, float]] = []
     if show_twrr:
