@@ -180,7 +180,14 @@ with tab_deposits:
                     if amount <= 0:
                         raise ValueError("Amount must be greater than 0.")
                     signed = amount if entry_type == "Deposit" else -amount
-                    storage.add_entry(selected_id, signed, entry_date, note)
+                    snap_val = None
+                    if save_snapshot:
+                        snap_val = _parse_dollar(snapshot_value_str) if snapshot_value_str.strip() else 0.0
+                    storage.add_entry(
+                        selected_id, signed, entry_date, note,
+                        snapshot_time=entry_date if snap_val is not None else None,
+                        snapshot_value=snap_val,
+                    )
                     st.session_state["last_single_entry"] = {
                         "entry_type": entry_type,
                         "amount": amount,
@@ -189,10 +196,8 @@ with tab_deposits:
                         "save_snapshot": save_snapshot,
                     }
                     msg = f"Added {entry_type.lower()} of ${amount:,.2f} on {entry_date.isoformat()}"
-                    if save_snapshot:
-                        snapshot_value = _parse_dollar(snapshot_value_str) if snapshot_value_str.strip() else 0.0
-                        storage.set_current_value(selected_id, snapshot_value, entry_date)
-                        msg += f" · saved snapshot entry ${snapshot_value:,.2f}"
+                    if snap_val is not None:
+                        msg += f" · saved snapshot entry ${snap_val:,.2f}"
                     st.success(msg)
                     st.rerun()
                 except ValueError as e:
@@ -336,7 +341,7 @@ with tab_deposits:
     # ----- Entries table -----
     st.subheader(f"Entries")
 
-    entries = storage.load_entries(selected_id).sort("date", descending=True)
+    entries = storage.load_entries(selected_id).filter(pl.col("amount") != 0.0).sort("entry_time", descending=True)
 
     if entries.is_empty():
         st.caption("No entries yet for this account.")
@@ -347,7 +352,7 @@ with tab_deposits:
             pl.lit(False).alias("__delete"),
         ).select(
             pl.col("__delete").alias("Delete?"),
-            pl.col("date").alias("Date"),
+            pl.col("entry_time").alias("Date"),
             pl.col("Type"),
             pl.col("Amount"),
             pl.col("note").alias("Note"),
@@ -417,7 +422,7 @@ with tab_snapshots:
                     new_val = _parse_dollar(new_val_str)
                     if new_val < 0:
                         raise ValueError("Snapshot value cannot be negative.")
-                    storage.set_current_value(selected_id, new_val, new_as_of)
+                    storage.set_snapshot(selected_id, new_val, new_as_of)
                     st.session_state[f"last_snapshot_{selected_id}"] = {
                         "value": new_val,
                         "as_of_date": new_as_of,
@@ -430,7 +435,7 @@ with tab_snapshots:
     # ----- Snapshot history -----
     st.subheader("Snapshot history")
 
-    snaps = storage.load_current_values(selected_id).sort("as_of_date", descending=True)
+    snaps = storage.load_snapshots(selected_id).sort("as_of_date", descending=True)
 
     if snaps.is_empty():
         st.caption("No snapshots yet for this account.")
@@ -475,7 +480,7 @@ with tab_snapshots:
             key="del_snaps_btn",
         ):
             for row in snaps_to_delete.iter_rows(named=True):
-                storage.remove_current_value(selected_id, row["Date"])
+                storage.remove_snapshot(selected_id, row["Date"])
             st.success(f"Deleted {n_snap_selected} snapshot{'s' if n_snap_selected != 1 else ''}.")
             st.rerun()
 

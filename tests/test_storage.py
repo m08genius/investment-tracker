@@ -56,13 +56,13 @@ def test_get_account_returns_none_for_missing():
 def test_remove_account_cascades_entries_and_values():
     aid = storage.add_account("A1")
     storage.add_entry(aid, 1000.0, date(2024, 1, 15))
-    storage.set_current_value(aid, 1100.0, date(2024, 6, 1))
+    storage.set_snapshot(aid, 1100.0, date(2024, 6, 1))
 
     storage.remove_account(aid)
 
     assert storage.load_accounts().is_empty()
     assert storage.load_entries().is_empty()
-    assert storage.load_current_values().is_empty()
+    assert storage.load_snapshots().is_empty()
 
 
 def test_remove_account_no_cascade_leaves_entries():
@@ -105,7 +105,7 @@ def test_add_entry_accepts_iso_date_string():
     aid = storage.add_account("A1")
     eid = storage.add_entry(aid, 100.0, "2024-03-15")
     df = storage.load_entries(aid)
-    assert df.row(0, named=True)["date"] == "2024-03-15"
+    assert df.row(0, named=True)["entry_time"] == "2024-03-15"
     assert df.row(0, named=True)["entry_id"] == eid
 
 
@@ -166,48 +166,119 @@ def test_entries_sorted_by_date():
     storage.add_entry(aid, 100.0, date(2024, 1, 1))
     storage.add_entry(aid, 100.0, date(2024, 2, 1))
 
-    dates = storage.load_entries(aid)["date"].to_list()
+    dates = storage.load_entries(aid)["entry_time"].to_list()
     assert dates == ["2024-01-01", "2024-02-01", "2024-03-01"]
 
 
 # ---------------------------------------------------------------------------
-# Current values
+# Snapshots
 # ---------------------------------------------------------------------------
 
-def test_set_current_value_replaces_same_date():
+def test_set_snapshot_creates_pure_snapshot_row():
     aid = storage.add_account("A1")
-    storage.set_current_value(aid, 1000.0, date(2024, 6, 1))
-    storage.set_current_value(aid, 1100.0, date(2024, 6, 1))   # replace
+    storage.set_snapshot(aid, 1000.0, date(2024, 6, 1))
 
-    df = storage.load_current_values(aid)
-    assert df.height == 1
-    assert df.row(0, named=True)["value"] == 1100.0
+    snaps = storage.load_snapshots(aid)
+    assert snaps.height == 1
+    assert snaps.row(0, named=True)["value"] == 1000.0
+    assert snaps.row(0, named=True)["as_of_date"] == "2024-06-01"
 
 
-def test_set_current_value_keeps_other_dates():
+def test_set_snapshot_replaces_same_date():
     aid = storage.add_account("A1")
-    storage.set_current_value(aid, 1000.0, date(2024, 6, 1))
-    storage.set_current_value(aid, 1200.0, date(2024, 7, 1))
+    storage.set_snapshot(aid, 1000.0, date(2024, 6, 1))
+    storage.set_snapshot(aid, 1100.0, date(2024, 6, 1))   # replace
 
-    df = storage.load_current_values(aid)
-    assert df.height == 2
+    snaps = storage.load_snapshots(aid)
+    assert snaps.height == 1
+    assert snaps.row(0, named=True)["value"] == 1100.0
 
 
-def test_get_latest_current_value():
+def test_set_snapshot_keeps_other_dates():
     aid = storage.add_account("A1")
-    storage.set_current_value(aid, 1000.0, date(2024, 6, 1))
-    storage.set_current_value(aid, 1200.0, date(2024, 7, 1))
-    storage.set_current_value(aid, 1100.0, date(2024, 5, 1))
+    storage.set_snapshot(aid, 1000.0, date(2024, 6, 1))
+    storage.set_snapshot(aid, 1200.0, date(2024, 7, 1))
 
-    latest = storage.get_latest_current_value(aid)
+    assert storage.load_snapshots(aid).height == 2
+
+
+def test_get_latest_snapshot():
+    aid = storage.add_account("A1")
+    storage.set_snapshot(aid, 1000.0, date(2024, 6, 1))
+    storage.set_snapshot(aid, 1200.0, date(2024, 7, 1))
+    storage.set_snapshot(aid, 1100.0, date(2024, 5, 1))
+
+    latest = storage.get_latest_snapshot(aid)
     assert latest is not None
     assert latest["as_of_date"] == "2024-07-01"
     assert latest["value"] == 1200.0
 
 
-def test_get_latest_current_value_none_for_no_snapshots():
+def test_get_latest_snapshot_none_for_no_snapshots():
     aid = storage.add_account("A1")
-    assert storage.get_latest_current_value(aid) is None
+    assert storage.get_latest_snapshot(aid) is None
+
+
+def test_add_entry_with_snapshot_attaches_to_row():
+    aid = storage.add_account("A1")
+    storage.add_entry(aid, 500.0, date(2024, 3, 1), snapshot_time=date(2024, 3, 1), snapshot_value=1500.0)
+
+    entries = storage.load_entries(aid)
+    assert entries.height == 1
+    row = entries.row(0, named=True)
+    assert row["amount"] == 500.0
+    assert row["snapshot_time"] == "2024-03-01"
+    assert row["snapshot_value"] == 1500.0
+
+    snaps = storage.load_snapshots(aid)
+    assert snaps.height == 1
+    assert snaps.row(0, named=True)["value"] == 1500.0
+
+
+def test_remove_snapshot_deletes_pure_snapshot_row():
+    aid = storage.add_account("A1")
+    storage.set_snapshot(aid, 1000.0, date(2024, 6, 1))
+    storage.remove_snapshot(aid, date(2024, 6, 1))
+
+    assert storage.load_snapshots(aid).is_empty()
+    assert storage.load_entries(aid).is_empty()
+
+
+def test_remove_snapshot_nulls_fields_on_real_entry():
+    aid = storage.add_account("A1")
+    storage.add_entry(aid, 500.0, date(2024, 3, 1), snapshot_time=date(2024, 3, 1), snapshot_value=1500.0)
+    storage.remove_snapshot(aid, date(2024, 3, 1))
+
+    # Entry still exists
+    entries = storage.load_entries(aid)
+    assert entries.height == 1
+    assert entries.row(0, named=True)["amount"] == 500.0
+    # Snapshot fields are gone
+    assert storage.load_snapshots(aid).is_empty()
+
+
+def test_migration_from_legacy_current_values(tmp_path, monkeypatch):
+    """Legacy current_values.csv is merged into entries on first load."""
+    import polars as pl
+    storage.set_data_dir(tmp_path / "data2")
+    (tmp_path / "data2").mkdir(parents=True)
+
+    aid = storage.add_account("A1")
+    storage.add_entry(aid, 1000.0, date(2023, 1, 1))
+
+    # Write a legacy current_values.csv manually.
+    legacy = pl.DataFrame(
+        {"account_id": [aid], "value": [1100.0], "as_of_date": ["2023-06-01"]},
+        schema=storage._LEGACY_CURRENT_VALUES_SCHEMA,
+    )
+    legacy.write_csv(storage._LEGACY_CURRENT_VALUES_PATH)
+
+    # Re-load entries — migration should fire.
+    entries = storage.load_entries(aid)
+    assert not storage._LEGACY_CURRENT_VALUES_PATH.exists()
+    snaps = storage.load_snapshots(aid)
+    assert snaps.height == 1
+    assert snaps.row(0, named=True)["value"] == 1100.0
 
 
 # ---------------------------------------------------------------------------
@@ -308,21 +379,23 @@ def test_full_round_trip_through_csv():
     storage.add_entry(a1, 1000.0, date(2023, 1, 1), "initial")
     storage.add_entry(a1, -100.0, date(2023, 6, 1), "withdrawal")
     storage.add_entry(a2, 5000.0, date(2023, 2, 1))
-    storage.set_current_value(a1, 1100.0, date(2024, 1, 1))
-    storage.set_current_value(a2, 5500.0, date(2024, 1, 1))
+    storage.set_snapshot(a1, 1100.0, date(2024, 1, 1))
+    storage.set_snapshot(a2, 5500.0, date(2024, 1, 1))
     storage.upsert_ticker_prices("VOO", _sample_prices([("2024-01-02", 450.0)]))
     storage.upsert_ticker_metadata("VOO", close_only=False, price_type="close")
 
-    # The set_data_dir trick: nothing changes, but reload everything fresh.
+    # Reload everything fresh.
     accounts = storage.load_accounts()
     entries = storage.load_entries()
-    cv = storage.load_current_values()
+    snaps_a1 = storage.load_snapshots(a1)
+    snaps_a2 = storage.load_snapshots(a2)
     voo = storage.load_ticker_prices("VOO")
     meta = storage.load_ticker_metadata()
 
     assert accounts.height == 2
-    assert entries.height == 3
-    assert cv.height == 2
+    assert entries.height == 5   # 3 cash-flow entries + 2 pure snapshot rows
+    assert snaps_a1.height == 1
+    assert snaps_a2.height == 1
     assert voo.height == 1
     assert meta.height == 1
     assert meta.row(0, named=True)["ticker"] == "VOO"

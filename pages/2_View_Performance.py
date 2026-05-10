@@ -9,6 +9,7 @@ import math
 from datetime import date
 
 import pandas as pd
+import polars as pl
 import streamlit as st
 
 from lib import returns, simulation, storage
@@ -103,9 +104,10 @@ for row in accounts.iter_rows(named=True):
     entries = storage.load_entries(aid)
     cash_flows: list[tuple[date, float]] = [
         (date.fromisoformat(d), float(a))
-        for d, a in zip(entries["date"].to_list(), entries["amount"].to_list())
+        for d, a in zip(entries["entry_time"].to_list(), entries["amount"].to_list())
+        if float(a) != 0.0
     ]
-    latest = storage.get_latest_current_value(aid)
+    latest = storage.get_latest_snapshot(aid)
 
     if latest is None:
         aggregate_eligible = False
@@ -125,7 +127,7 @@ for row in accounts.iter_rows(named=True):
     if show_twrr:
         snaps = [
             (date.fromisoformat(r["as_of_date"]), float(r["value"]))
-            for r in storage.load_current_values(aid).iter_rows(named=True)
+            for r in storage.load_snapshots(aid).iter_rows(named=True)
         ]
         row_data["Own TWRR"] = returns.compute_twrr(snaps, cash_flows)
 
@@ -258,7 +260,9 @@ for tk in selected_tickers:
         entries = storage.load_entries(row["account_id"])
         if entries.is_empty():
             continue
-        first_entry = date.fromisoformat(entries["date"].min())
+        first_entry = date.fromisoformat(
+            entries.filter(pl.col("amount") != 0.0)["entry_time"].min()
+        )
         if (earliest_cached - first_entry).days > 7:
             gap_messages.append(
                 f"**{tk}** cache starts {meta['earliest_date']}, "

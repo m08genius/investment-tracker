@@ -29,8 +29,15 @@ TICKERS_DIR = DATA_DIR / "tickers"
 
 ACCOUNTS_PATH = DATA_DIR / "accounts.csv"
 ENTRIES_PATH = DATA_DIR / "entries.csv"
-CURRENT_VALUES_PATH = DATA_DIR / "current_values.csv"
 TICKER_METADATA_PATH = TICKERS_DIR / "_metadata.csv"
+
+# Legacy path — only used by the one-time migration from the old two-table layout.
+_LEGACY_CURRENT_VALUES_PATH = DATA_DIR / "current_values.csv"
+_LEGACY_CURRENT_VALUES_SCHEMA: dict[str, pl.DataType] = {
+    "account_id": pl.Utf8,
+    "value": pl.Float64,
+    "as_of_date": pl.Utf8,
+}
 
 
 def set_data_dir(path: str | Path) -> None:
@@ -39,13 +46,13 @@ def set_data_dir(path: str | Path) -> None:
     at a tmp directory. Must be called before any read/write.
     """
     global DATA_DIR, TICKERS_DIR, ACCOUNTS_PATH, ENTRIES_PATH
-    global CURRENT_VALUES_PATH, TICKER_METADATA_PATH
+    global _LEGACY_CURRENT_VALUES_PATH, TICKER_METADATA_PATH
 
     DATA_DIR = Path(path)
     TICKERS_DIR = DATA_DIR / "tickers"
     ACCOUNTS_PATH = DATA_DIR / "accounts.csv"
     ENTRIES_PATH = DATA_DIR / "entries.csv"
-    CURRENT_VALUES_PATH = DATA_DIR / "current_values.csv"
+    _LEGACY_CURRENT_VALUES_PATH = DATA_DIR / "current_values.csv"
     TICKER_METADATA_PATH = TICKERS_DIR / "_metadata.csv"
 
 
@@ -61,17 +68,13 @@ ACCOUNTS_SCHEMA: dict[str, pl.DataType] = {
 }
 
 ENTRIES_SCHEMA: dict[str, pl.DataType] = {
-    "entry_id": pl.Utf8,
-    "account_id": pl.Utf8,
-    "amount": pl.Float64,
-    "date": pl.Utf8,
-    "note": pl.Utf8,
-}
-
-CURRENT_VALUES_SCHEMA: dict[str, pl.DataType] = {
-    "account_id": pl.Utf8,
-    "value": pl.Float64,
-    "as_of_date": pl.Utf8,
+    "entry_id":       pl.Utf8,
+    "account_id":     pl.Utf8,
+    "amount":         pl.Float64,
+    "entry_time":     pl.Utf8,
+    "note":           pl.Utf8,
+    "snapshot_time":  pl.Utf8,
+    "snapshot_value": pl.Float64,
 }
 
 TICKER_PRICES_SCHEMA: dict[str, pl.DataType] = {
@@ -135,6 +138,64 @@ def _coerce_date(d: date | str) -> date:
 
 
 # ---------------------------------------------------------------------------
+# One-time migration: current_values.csv → entries.csv snapshot columns
+# ---------------------------------------------------------------------------
+
+def _maybe_migrate_current_values() -> None:
+    """
+    If the legacy current_values.csv still exists, fold its rows into the
+    entries table as snapshot columns, then delete the old file.
+
+    Called automatically by load_entries() on the first read after upgrade.
+    """
+    if not _LEGACY_CURRENT_VALUES_PATH.exists():
+        return
+
+    cv = _read_or_empty(_LEGACY_CURRENT_VALUES_PATH, _LEGACY_CURRENT_VALUES_SCHEMA)
+    if cv.is_empty():
+        _LEGACY_CURRENT_VALUES_PATH.unlink(missing_ok=True)
+        return
+
+    df = _read_or_empty(ENTRIES_PATH, ENTRIES_SCHEMA)
+
+    for row in cv.iter_rows(named=True):
+        aid = row["account_id"]
+        date_str = row["as_of_date"]
+        value = float(row["value"])
+
+        # Try to attach to an existing entry on the same account + date that
+        # doesn't already have a snapshot.
+        mask = (
+            (pl.col("account_id") == aid)
+            & (pl.col("entry_time") == date_str)
+            & pl.col("snapshot_value").is_null()
+        )
+        if df.filter(mask).height > 0:
+            df = df.with_columns(
+                pl.when(mask).then(pl.lit(date_str)).otherwise(pl.col("snapshot_time")).alias("snapshot_time"),
+                pl.when(mask).then(pl.lit(value)).otherwise(pl.col("snapshot_value")).alias("snapshot_value"),
+            )
+        else:
+            # No matching entry — create a pure snapshot row (amount=0).
+            new_row = pl.DataFrame(
+                {
+                    "entry_id": [_new_id()],
+                    "account_id": [aid],
+                    "amount": [0.0],
+                    "entry_time": [date_str],
+                    "note": [""],
+                    "snapshot_time": [date_str],
+                    "snapshot_value": [value],
+                },
+                schema=ENTRIES_SCHEMA,
+            )
+            df = pl.concat([df, new_row], how="vertical")
+
+    _atomic_write_csv(df.select(list(ENTRIES_SCHEMA.keys())), ENTRIES_PATH)
+    _LEGACY_CURRENT_VALUES_PATH.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Accounts
 # ---------------------------------------------------------------------------
 
@@ -176,15 +237,12 @@ def add_account(name: str, description: str = "") -> str:
 def remove_account(account_id: str, *, cascade: bool = True) -> None:
     """
     Delete an account. If cascade=True (default), also delete its entries
-    and current-value snapshots.
+    (which now embed any snapshot data).
     """
     save_accounts(load_accounts().filter(pl.col("account_id") != account_id))
 
     if cascade:
         save_entries(load_entries().filter(pl.col("account_id") != account_id))
-        save_current_values(
-            load_current_values().filter(pl.col("account_id") != account_id)
-        )
 
 
 def get_account(account_id: str) -> dict | None:
@@ -196,15 +254,16 @@ def get_account(account_id: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Entries (cash flows)
+# Entries (cash flows + optional snapshot)
 # ---------------------------------------------------------------------------
 
 def load_entries(account_id: str | None = None) -> pl.DataFrame:
-    """Load entries, optionally filtered to one account, sorted by date."""
+    """Load entries, optionally filtered to one account, sorted by entry_time."""
+    _maybe_migrate_current_values()
     df = _read_or_empty(ENTRIES_PATH, ENTRIES_SCHEMA)
     if account_id is not None:
         df = df.filter(pl.col("account_id") == account_id)
-    return df.sort("date")
+    return df.sort("entry_time")
 
 
 def save_entries(df: pl.DataFrame) -> None:
@@ -217,10 +276,16 @@ def add_entry(
     amount: float,
     entry_date: date | str,
     note: str = "",
+    *,
+    snapshot_time: date | str | None = None,
+    snapshot_value: float | None = None,
 ) -> str:
     """
     Add a cash flow. Sign convention: positive = deposit, negative = withdrawal.
     Future-dated entries are rejected.
+
+    Optionally attach a portfolio snapshot on the same or a different date by
+    passing snapshot_time and snapshot_value.
     """
     if get_account(account_id) is None:
         raise ValueError(f"No account with id {account_id!r}.")
@@ -229,14 +294,19 @@ def add_entry(
     if entry_date > date.today():
         raise ValueError("Entry date cannot be in the future.")
 
+    snap_time_str = _coerce_date(snapshot_time).isoformat() if snapshot_time is not None else None
+    snap_val = float(snapshot_value) if snapshot_value is not None else None
+
     new_id = _new_id()
     new_row = pl.DataFrame(
         {
             "entry_id": [new_id],
             "account_id": [account_id],
             "amount": [float(amount)],
-            "date": [entry_date.isoformat()],
+            "entry_time": [entry_date.isoformat()],
             "note": [note.strip()],
+            "snapshot_time": [snap_time_str],
+            "snapshot_value": [snap_val],
         },
         schema=ENTRIES_SCHEMA,
     )
@@ -263,12 +333,14 @@ def add_entries_bulk(rows: list[dict]) -> list[str]:
 
     today = date.today()
     new_ids: list[str] = []
-    new_records = {
+    new_records: dict[str, list] = {
         "entry_id": [],
         "account_id": [],
         "amount": [],
-        "date": [],
+        "entry_time": [],
         "note": [],
+        "snapshot_time": [],
+        "snapshot_value": [],
     }
     for r in rows:
         d = _coerce_date(r["date"])
@@ -279,8 +351,10 @@ def add_entries_bulk(rows: list[dict]) -> list[str]:
         new_records["entry_id"].append(eid)
         new_records["account_id"].append(r["account_id"])
         new_records["amount"].append(float(r["amount"]))
-        new_records["date"].append(d.isoformat())
+        new_records["entry_time"].append(d.isoformat())
         new_records["note"].append(r.get("note", "").strip())
+        new_records["snapshot_time"].append(None)
+        new_records["snapshot_value"].append(None)
 
     new_df = pl.DataFrame(new_records, schema=ENTRIES_SCHEMA)
     save_entries(pl.concat([load_entries(), new_df], how="vertical"))
@@ -288,7 +362,7 @@ def add_entries_bulk(rows: list[dict]) -> list[str]:
 
 
 def remove_entry(entry_id: str) -> None:
-    """Delete a single entry by id."""
+    """Delete a single entry by id (and any snapshot attached to it)."""
     save_entries(load_entries().filter(pl.col("entry_id") != entry_id))
 
 
@@ -301,69 +375,114 @@ def remove_entries(entry_ids: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Current values (snapshots)
+# Snapshots (views over the entries table)
 # ---------------------------------------------------------------------------
 
-def load_current_values(account_id: str | None = None) -> pl.DataFrame:
-    """Load current-value snapshots, optionally filtered to one account."""
-    df = _read_or_empty(CURRENT_VALUES_PATH, CURRENT_VALUES_SCHEMA)
-    if account_id is not None:
-        df = df.filter(pl.col("account_id") == account_id)
-    return df.sort("as_of_date")
-
-
-def save_current_values(df: pl.DataFrame) -> None:
-    _atomic_write_csv(
-        df.select(list(CURRENT_VALUES_SCHEMA.keys())), CURRENT_VALUES_PATH
+def load_snapshots(account_id: str | None = None) -> pl.DataFrame:
+    """
+    Return all rows that carry a snapshot value, as a DataFrame with columns
+    'as_of_date' and 'value' (matching the old current_values shape for
+    drop-in compatibility).
+    """
+    df = load_entries(account_id)
+    return (
+        df.filter(pl.col("snapshot_value").is_not_null())
+        .select(
+            pl.col("snapshot_time").alias("as_of_date"),
+            pl.col("snapshot_value").alias("value"),
+        )
+        .sort("as_of_date")
     )
 
 
-def set_current_value(
+def set_snapshot(
     account_id: str,
     value: float,
     as_of_date: date | str | None = None,
 ) -> None:
     """
-    Record the current market value of an account on a given date.
-    If a snapshot already exists for (account_id, as_of_date), it is replaced.
+    Record a portfolio snapshot for the given account and date.
+    If an entry (or pure snapshot row) already has snapshot_time == as_of_date
+    for this account, its snapshot_value is updated. Otherwise a new
+    amount=0 row is created.
     """
     if get_account(account_id) is None:
         raise ValueError(f"No account with id {account_id!r}.")
 
     if as_of_date is None:
         as_of_date = date.today()
-    as_of_date = _coerce_date(as_of_date)
-    date_str = as_of_date.isoformat()
-
-    df = load_current_values().filter(
-        ~((pl.col("account_id") == account_id) & (pl.col("as_of_date") == date_str))
-    )
-    new_row = pl.DataFrame(
-        {
-            "account_id": [account_id],
-            "value": [float(value)],
-            "as_of_date": [date_str],
-        },
-        schema=CURRENT_VALUES_SCHEMA,
-    )
-    save_current_values(pl.concat([df, new_row], how="vertical"))
-
-
-def get_latest_current_value(account_id: str) -> dict | None:
-    """Return the most recent snapshot for an account, or None."""
-    df = load_current_values(account_id)
-    if df.is_empty():
-        return None
-    return df.sort("as_of_date", descending=True).row(0, named=True)
-
-
-def remove_current_value(account_id: str, as_of_date: date | str) -> None:
-    """Delete the snapshot for (account_id, as_of_date) if it exists."""
     date_str = _coerce_date(as_of_date).isoformat()
-    df = load_current_values().filter(
-        ~((pl.col("account_id") == account_id) & (pl.col("as_of_date") == date_str))
-    )
-    save_current_values(df)
+
+    df = load_entries()
+    mask = (pl.col("account_id") == account_id) & (pl.col("snapshot_time") == date_str)
+
+    if df.filter(mask).height > 0:
+        df = df.with_columns(
+            pl.when(mask)
+            .then(pl.lit(float(value)))
+            .otherwise(pl.col("snapshot_value"))
+            .alias("snapshot_value")
+        )
+    else:
+        new_row = pl.DataFrame(
+            {
+                "entry_id": [_new_id()],
+                "account_id": [account_id],
+                "amount": [0.0],
+                "entry_time": [date_str],
+                "note": [""],
+                "snapshot_time": [date_str],
+                "snapshot_value": [float(value)],
+            },
+            schema=ENTRIES_SCHEMA,
+        )
+        df = pl.concat([df, new_row], how="vertical")
+
+    save_entries(df)
+
+
+def get_latest_snapshot(account_id: str) -> dict | None:
+    """
+    Return the most recent snapshot for an account as
+    {'as_of_date': str, 'value': float}, or None.
+    """
+    snaps = load_snapshots(account_id)
+    if snaps.is_empty():
+        return None
+    return snaps.sort("as_of_date", descending=True).row(0, named=True)
+
+
+def remove_snapshot(account_id: str, as_of_date: date | str) -> None:
+    """
+    Remove a snapshot.
+    - Pure snapshot rows (amount == 0): the whole row is deleted.
+    - Entries with an attached snapshot (amount != 0): snapshot fields are
+      nulled out; the entry itself is kept.
+    """
+    date_str = _coerce_date(as_of_date).isoformat()
+    df = load_entries()
+    mask = (pl.col("account_id") == account_id) & (pl.col("snapshot_time") == date_str)
+
+    matched = df.filter(mask)
+    if matched.is_empty():
+        return
+
+    # If ALL matched rows are pure snapshots, delete them; otherwise null fields.
+    if (matched["amount"] == 0.0).all():
+        df = df.filter(~mask)
+    else:
+        df = df.with_columns(
+            pl.when(mask)
+            .then(pl.lit(None, dtype=pl.Utf8))
+            .otherwise(pl.col("snapshot_time"))
+            .alias("snapshot_time"),
+            pl.when(mask)
+            .then(pl.lit(None, dtype=pl.Float64))
+            .otherwise(pl.col("snapshot_value"))
+            .alias("snapshot_value"),
+        )
+
+    save_entries(df)
 
 
 # ---------------------------------------------------------------------------
