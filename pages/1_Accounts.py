@@ -601,6 +601,131 @@ with st.expander("➕ Add recurring deposits"):
                     st.session_state.pop("recurring_preview", None)
                     st.rerun()
 
+# ----- Bulk import from CSV / TSV -----
+with st.expander("📋 Bulk import from CSV / TSV"):
+    import csv as _csv
+    import io as _io
+
+    raw_import = st.text_area(
+        "Paste CSV or tab-separated data (first row = column headers)",
+        height=180,
+        key=f"import_raw_{selected_id}",
+        placeholder="date,shares,price\n2024-01-02,10,150.00\n2024-02-15,5,155.00",
+    )
+
+    if not raw_import.strip():
+        st.caption("Paste data above to begin mapping.")
+    else:
+        _lines = raw_import.strip().splitlines()
+        _delim = "\t" if "\t" in _lines[0] else ","
+        try:
+            _reader = _csv.DictReader(_io.StringIO(raw_import.strip()), delimiter=_delim)
+            _import_rows = list(_reader)
+            _import_hdrs = list(_reader.fieldnames or [])
+        except Exception as _e:
+            st.error(f"Could not parse data: {_e}")
+            _import_rows, _import_hdrs = [], []
+
+        if _import_rows and _import_hdrs:
+            st.caption(
+                f"**{len(_import_rows)} rows** · "
+                f"delimiter: {'tab' if _delim == chr(9) else 'comma'} · "
+                f"columns: {', '.join(f'`{h}`' for h in _import_hdrs)}"
+            )
+
+            _SKIP = "— skip —"
+            _opts = [_SKIP] + _import_hdrs
+
+            def _guess(keywords: list[str]) -> int:
+                """Return index in _opts of the first header that contains a keyword."""
+                for kw in keywords:
+                    for h in _import_hdrs:
+                        if kw in h.lower():
+                            return _opts.index(h)
+                return 0
+
+            st.markdown("**Map columns to fields:**")
+            _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+            _map_date   = _mc1.selectbox("Date",         _opts, index=_guess(["date","time","day"]),             key=f"imp_date_{selected_id}")
+            _map_shares = _mc2.selectbox("Shares",       _opts, index=_guess(["share","qty","quantity","unit"]), key=f"imp_shares_{selected_id}")
+            _map_price  = _mc3.selectbox("Price/share",  _opts, index=_guess(["price","rate"]),                  key=f"imp_price_{selected_id}")
+            _map_amount = _mc4.selectbox("Total amount", _opts, index=_guess(["amount","total","value"]),        key=f"imp_amount_{selected_id}")
+            _map_note   = _mc5.selectbox("Note",         _opts, index=_guess(["note","memo","desc","comment"]), key=f"imp_note_{selected_id}")
+
+            # Parse preview
+            _preview, _skip_msgs = [], []
+            for _i, _row in enumerate(_import_rows):
+                _lineno = _i + 2
+                try:
+                    _date_raw = (_row.get(_map_date) or "").strip() if _map_date != _SKIP else ""
+                    if not _date_raw:
+                        _skip_msgs.append(f"Row {_lineno}: date missing"); continue
+                    _entry_dt = pd.to_datetime(_date_raw).date()
+
+                    def _num(col):
+                        v = (_row.get(col) or "").strip().replace("$","").replace(",","")
+                        return float(v) if v else None
+
+                    _sh  = _num(_map_shares)  if _map_shares  != _SKIP else None
+                    _pr  = _num(_map_price)   if _map_price   != _SKIP else None
+                    _amt = _num(_map_amount)  if _map_amount  != _SKIP else None
+                    _nt  = (_row.get(_map_note) or "").strip() if _map_note != _SKIP else ""
+
+                    if _sh is not None and _pr is not None:
+                        _fshares, _fprice, _famount = _sh, _pr, _sh * _pr
+                    elif _sh is not None and _amt is not None:
+                        if _sh == 0:
+                            _skip_msgs.append(f"Row {_lineno}: shares=0, cannot compute price"); continue
+                        _fshares, _fprice, _famount = _sh, _amt / _sh, _amt
+                    elif _amt is not None:
+                        _fshares, _fprice, _famount = 1.0, abs(_amt), _amt
+                    else:
+                        _skip_msgs.append(f"Row {_lineno}: need price/share or total amount"); continue
+
+                    _preview.append({"Date": _entry_dt.isoformat(), "Shares": _fshares,
+                                     "Price/share": _fprice, "Amount": _famount, "Note": _nt})
+                except Exception as _e:
+                    _skip_msgs.append(f"Row {_lineno}: {_e}")
+
+            if _preview:
+                st.markdown(f"**Preview** (first {min(5, len(_preview))} of {len(_preview)} rows):")
+                st.dataframe(
+                    pl.DataFrame(_preview[:5]).with_columns(
+                        pl.col("Amount").map_elements(lambda x: f"${x:,.2f}", return_dtype=pl.Utf8),
+                        pl.col("Price/share").map_elements(lambda x: f"${x:,.4f}", return_dtype=pl.Utf8),
+                        pl.col("Shares").map_elements(lambda x: f"{x:g}", return_dtype=pl.Utf8),
+                    ),
+                    hide_index=True, use_container_width=True,
+                )
+
+            if _skip_msgs:
+                with st.expander(f"⚠️ {len(_skip_msgs)} rows will be skipped"):
+                    for _m in _skip_msgs[:30]:
+                        st.caption(_m)
+
+            if _preview and st.button(
+                f"Import {len(_preview)} {'entry' if len(_preview)==1 else 'entries'}",
+                key=f"imp_btn_{selected_id}", type="primary",
+            ):
+                _added, _errs = 0, []
+                for _r in _preview:
+                    try:
+                        storage.add_entry(
+                            selected_id, _r["Amount"], _r["Date"], _r["Note"],
+                            shares=_r["Shares"], price_per_share=_r["Price/share"],
+                        )
+                        _added += 1
+                    except Exception as _e:
+                        _errs.append(str(_e))
+                if _added:
+                    st.success(f"Imported {_added} {'entry' if _added==1 else 'entries'}.")
+                if _errs:
+                    with st.expander(f"{len(_errs)} entries failed"):
+                        for _m in _errs[:20]:
+                            st.caption(_m)
+                if _added:
+                    st.rerun()
+
 # ===========================================================================
 # Entries table
 # ===========================================================================
