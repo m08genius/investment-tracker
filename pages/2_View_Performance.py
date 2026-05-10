@@ -258,11 +258,10 @@ for tk in selected_tickers:
     earliest_cached = date.fromisoformat(meta["earliest_date"])
     for row in accounts.iter_rows(named=True):
         entries = storage.load_entries(row["account_id"])
-        if entries.is_empty():
+        flow_dates = entries.filter(pl.col("amount") != 0.0)["entry_time"].drop_nulls()
+        if flow_dates.is_empty():
             continue
-        first_entry = date.fromisoformat(
-            entries.filter(pl.col("amount") != 0.0)["entry_time"].min()
-        )
+        first_entry = date.fromisoformat(flow_dates.min())
         if (earliest_cached - first_entry).days > 7:
             gap_messages.append(
                 f"**{tk}** cache starts {meta['earliest_date']}, "
