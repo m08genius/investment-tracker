@@ -1,0 +1,5 @@
+ticker,last_refreshed,earliest_date,latest_date,price_type,close_only
+FXAIX,2026-05-09T15:51:32,2012-10-01,2026-05-08,close,true
+FSELX,2026-05-09T15:52:03,2012-10-01,2026-05-08,close,true
+VOO,2026-05-09T15:52:15,2012-10-01,2026-05-08,close,false
+FSGAX,2026-05-09T15:52:54,2012-10-01,2026-05-08,close,true

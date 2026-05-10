@@ -1,5 +1,7 @@
-# Data files (user's investment data — never commit)
-data/
+# User's personal investment data — never commit
+data/accounts.csv
+data/entries.csv
+data/current_values.csv
 
 # Python
 __pycache__/
