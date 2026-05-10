@@ -231,6 +231,28 @@ with st.expander("➕ Add entry", expanded=True):
                     "Refresh ticker data or use Custom."
                 )
 
+        # Recording amount ribbon: shares × cost basis price
+        try:
+            _record_shares = _parse_shares(shares_str) if shares_str.strip() else None
+        except ValueError:
+            _record_shares = None
+        if _record_shares is not None:
+            if cost_basis_type == "Custom":
+                try:
+                    _record_price = _parse_dollar(custom_price_str) if custom_price_str.strip() else None
+                except ValueError:
+                    _record_price = None
+            else:
+                _record_price = storage.get_ticker_price_on_date(
+                    ticker_symbol, entry_date, cost_basis_type.lower()
+                )
+            if _record_price is not None and _record_price > 0:
+                _record_total = abs(_record_shares * _record_price)
+                st.info(
+                    f"Recording: **{_record_shares:g} shares × ${_record_price:,.4f} "
+                    f"= ${_record_total:,.2f}**"
+                )
+
         # Portfolio value preview (total shares × close price)
         _existing_shares = float(_all_entries["shares"].sum() or 0.0)
         _close_preview = storage.get_ticker_price_on_date(ticker_symbol, entry_date, "close")
