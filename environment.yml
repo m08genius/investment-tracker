@@ -1,0 +1,13 @@
+name: investment_tracker
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - polars
+  - streamlit
+  - scipy
+  - numpy
+  - pytest
+  - pip
+  - pip:
+      - yfinance
