@@ -661,7 +661,9 @@ with st.expander("📋 Bulk import from CSV / TSV"):
                     if not _date_raw:
                         _skip_msgs.append(f"Row {_lineno}: date missing"); continue
                     # Try common date formats
-                    for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                    for _fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y",
+                                 "%Y/%m/%d", "%b-%d-%Y", "%b %d, %Y", "%B-%d-%Y",
+                                 "%B %d, %Y", "%d-%b-%Y", "%d %b %Y"):
                         try:
                             _entry_dt = datetime.strptime(_date_raw, _fmt).date(); break
                         except ValueError:
