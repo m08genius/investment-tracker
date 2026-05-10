@@ -341,29 +341,68 @@ all_entries = storage.load_entries(selected_id).sort("entry_time", descending=Tr
 if all_entries.is_empty():
     st.caption("No entries yet for this account.")
 else:
-    display = all_entries.with_columns(
+    _fmt = lambda x: f"${x:,.2f}" if x is not None else ""
+
+    # Split into cash-flow rows and pure snapshot rows.
+    flows = all_entries.filter(pl.col("amount") != 0.0)
+    pure_snaps = all_entries.filter(pl.col("amount") == 0.0).select(
+        pl.col("entry_id").alias("snap_entry_id"),
+        pl.col("entry_time"),
+        pl.col("snapshot_value").alias("snap_val"),
+    )
+
+    # Merge same-date snapshots onto flow rows (left join).
+    flows_merged = flows.join(pure_snaps, on="entry_time", how="left")
+
+    # Snapshot-only rows: pure snapshots with no flow on the same date.
+    snap_only = pure_snaps.join(
+        flows.select("entry_time"), on="entry_time", how="anti"
+    )
+
+    # Build display rows for cash flows (merged with same-date snapshots).
+    flow_display = flows_merged.with_columns(
         pl.when(pl.col("amount") > 0).then(pl.lit("Deposit"))
-          .when(pl.col("amount") < 0).then(pl.lit("Withdrawal"))
-          .otherwise(pl.lit("Snapshot"))
-          .alias("Type"),
-        pl.when(pl.col("amount") != 0.0)
-          .then(pl.col("amount").abs().map_elements(lambda x: f"${x:,.2f}", return_dtype=pl.Utf8))
-          .otherwise(pl.lit(""))
-          .alias("Amount"),
-        pl.when(pl.col("amount") == 0.0)
-          .then(pl.col("snapshot_value").map_elements(lambda x: f"${x:,.2f}" if x is not None else "", return_dtype=pl.Utf8))
-          .otherwise(pl.lit(""))
-          .alias("Total Value"),
-        pl.lit(False).alias("__delete"),
+          .otherwise(pl.lit("Withdrawal")).alias("Type"),
+        pl.col("amount").abs().map_elements(_fmt, return_dtype=pl.Utf8).alias("Amount"),
+        pl.when(pl.col("snapshot_value").is_not_null())
+          .then(pl.col("snapshot_value").map_elements(_fmt, return_dtype=pl.Utf8))
+          .when(pl.col("snap_val").is_not_null())
+          .then(pl.col("snap_val").map_elements(_fmt, return_dtype=pl.Utf8))
+          .otherwise(pl.lit("")).alias("Total Value"),
+        pl.col("snap_entry_id").fill_null(""),
+        pl.lit(False).alias("Delete?"),
     ).select(
-        pl.col("__delete").alias("Delete?"),
+        pl.col("Delete?"),
         pl.col("entry_time").alias("Date"),
         pl.col("Type"),
         pl.col("Amount"),
         pl.col("Total Value"),
         pl.col("note").alias("Note"),
         pl.col("entry_id"),
+        pl.col("snap_entry_id"),
     )
+
+    # Build display rows for snapshot-only entries.
+    snap_display = snap_only.with_columns(
+        pl.lit("Snapshot").alias("Type"),
+        pl.lit("").alias("Amount"),
+        pl.col("snap_val").map_elements(_fmt, return_dtype=pl.Utf8).alias("Total Value"),
+        pl.lit("").alias("Note"),
+        pl.col("snap_entry_id").alias("entry_id"),
+        pl.lit("").alias("snap_entry_id"),
+        pl.lit(False).alias("Delete?"),
+    ).select(
+        pl.col("Delete?"),
+        pl.col("entry_time").alias("Date"),
+        pl.col("Type"),
+        pl.col("Amount"),
+        pl.col("Total Value"),
+        pl.col("Note"),
+        pl.col("entry_id"),
+        pl.col("snap_entry_id"),
+    )
+
+    display = pl.concat([flow_display, snap_display], how="vertical").sort("Date", descending=True)
 
     edited = st.data_editor(
         display,
@@ -375,6 +414,7 @@ else:
             "Total Value": st.column_config.TextColumn(disabled=True),
             "Note": st.column_config.TextColumn(disabled=True),
             "entry_id": None,
+            "snap_entry_id": None,
         },
         hide_index=True,
         use_container_width=True,
@@ -393,7 +433,13 @@ else:
         disabled=n_selected == 0,
         type="primary" if n_selected > 0 else "secondary",
     ):
-        storage.remove_entries(selected_rows["entry_id"].to_list())
+        to_delete = []
+        for r in selected_rows.iter_rows(named=True):
+            if r["entry_id"]:
+                to_delete.append(r["entry_id"])
+            if r["snap_entry_id"]:
+                to_delete.append(r["snap_entry_id"])
+        storage.remove_entries(to_delete)
         st.success(f"Deleted {n_selected} {'entry' if n_selected == 1 else 'entries'}.")
         st.rerun()
 
