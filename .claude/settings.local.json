@@ -10,7 +10,8 @@
       "Bash(find /opt /usr/local ~/miniforge3 ~/micromamba -name pytest -path \"*/investment-tracker/*\" 2>/dev/null | head -3)",
       "Bash(conda info *)",
       "Bash(python3 -m pytest --version)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git commit -m 'Use list_active_tickers\\(\\) in UI; list_cached_tickers\\(\\) is now internal only *)"
     ]
   }
 }

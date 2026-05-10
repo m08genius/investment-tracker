@@ -234,9 +234,9 @@ def refresh_ticker(ticker: str, *, force_full_refresh: bool = False) -> dict:
 
 
 def refresh_all_tickers() -> dict[str, dict]:
-    """Refresh every cached ticker. Returns ticker -> metadata dict."""
+    """Refresh every active ticker. Returns ticker -> metadata dict."""
     out: dict[str, dict] = {}
-    for t in storage.list_cached_tickers():
+    for t in storage.list_active_tickers():
         try:
             out[t] = refresh_ticker(t)
         except Exception as e:  # noqa: BLE001 - surface error per ticker, don't fail batch

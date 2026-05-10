@@ -29,7 +29,7 @@ st.write(
 # Summary stats
 accounts = storage.load_accounts()
 entries = storage.load_entries()
-tickers = storage.list_cached_tickers()
+tickers = storage.list_active_tickers()
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Accounts", accounts.height)

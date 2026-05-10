@@ -73,7 +73,7 @@ with st.expander("➕ Add a new ticker", expanded=False):
 st.divider()
 st.subheader("Cached tickers")
 
-cached = storage.list_cached_tickers()
+cached = storage.list_active_tickers()
 metadata = storage.load_ticker_metadata()
 
 if not cached:

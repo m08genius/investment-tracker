@@ -31,7 +31,7 @@ if accounts.is_empty():
 # Ticker selection + options
 # ---------------------------------------------------------------------------
 
-cached_tickers = storage.list_cached_tickers()
+cached_tickers = storage.list_active_tickers()
 
 if not cached_tickers:
     st.info(

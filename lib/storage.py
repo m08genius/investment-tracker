@@ -412,12 +412,20 @@ def upsert_ticker_prices(ticker: str, new_df: pl.DataFrame) -> None:
 
 
 def list_cached_tickers() -> list[str]:
-    """List tickers we have price files for."""
+    """List tickers that have a price file on disk (including hidden ones)."""
     if not TICKERS_DIR.exists():
         return []
     return sorted(
         p.stem for p in TICKERS_DIR.glob("*.csv") if not p.stem.startswith("_")
     )
+
+
+def list_active_tickers() -> list[str]:
+    """List tickers that are active in the UI (present in metadata)."""
+    meta = load_ticker_metadata()
+    if meta.is_empty():
+        return []
+    return sorted(meta["ticker"].to_list())
 
 
 # ---------------------------------------------------------------------------
