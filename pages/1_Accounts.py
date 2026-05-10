@@ -43,43 +43,36 @@ else:
             st.session_state["selected_account_id"] not in account_ids:
         st.session_state["selected_account_id"] = account_ids[0]
 
-    for row in accounts_df.iter_rows(named=True):
-        aid = row["account_id"]
-        is_selected = st.session_state["selected_account_id"] == aid
+    account_rows = list(accounts_df.iter_rows(named=True))
 
-        c1, c2, c3 = st.columns([3, 5, 1])
+    # Group by description; named groups first (sorted), then ungrouped.
+    groups: dict[str, list] = {}
+    for row in account_rows:
+        key = row["description"] or ""
+        groups.setdefault(key, []).append(row)
+    named_groups = sorted((k, v) for k, v in groups.items() if k)
+    ungrouped = groups.get("", [])
+    ordered_groups = named_groups + ([("", ungrouped)] if ungrouped else [])
 
-        btn_label = f"{'✓ ' if is_selected else ''}{row['name']}"
-        if c1.button(
-            btn_label,
-            key=f"sel_{aid}",
-            type="primary" if is_selected else "secondary",
-            use_container_width=True,
-        ):
-            st.session_state["selected_account_id"] = aid
-            st.session_state.pop("recurring_preview", None)
-            st.rerun()
-
-        c2.caption(row["description"] or "—")
-
-        if c3.button("🗑️", key=f"del_acct_{aid}",
-                     help="Delete account and ALL its entries (cannot be undone)"):
-            st.session_state[f"confirm_del_{aid}"] = True
-
-        if st.session_state.get(f"confirm_del_{aid}"):
-            warn_col, yes_col, no_col = st.columns([4, 1, 1])
-            warn_col.warning(
-                f"Delete **{row['name']}** and all its entries? This cannot be undone."
-            )
-            if yes_col.button("Yes, delete", key=f"yes_del_{aid}"):
-                storage.remove_account(aid)
-                st.session_state.pop(f"confirm_del_{aid}", None)
-                if st.session_state.get("selected_account_id") == aid:
-                    st.session_state.pop("selected_account_id", None)
-                st.rerun()
-            if no_col.button("Cancel", key=f"no_del_{aid}"):
-                st.session_state.pop(f"confirm_del_{aid}", None)
-                st.rerun()
+    for g_idx, (group_label, group_rows) in enumerate(ordered_groups):
+        if g_idx > 0:
+            st.divider()
+        if group_label:
+            st.caption(group_label)
+        for i in range(0, len(group_rows), 3):
+            cols = st.columns(3)
+            for col, row in zip(cols, group_rows[i:i + 3]):
+                aid = row["account_id"]
+                is_selected = st.session_state["selected_account_id"] == aid
+                if col.button(
+                    f"{'✓ ' if is_selected else ''}{row['name']}",
+                    key=f"sel_{aid}",
+                    type="primary" if is_selected else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state["selected_account_id"] = aid
+                    st.session_state.pop("recurring_preview", None)
+                    st.rerun()
 
 with st.expander("➕ Add a new account"):
     with st.form("new_account_form", clear_on_submit=True):
@@ -485,3 +478,26 @@ with tab_snapshots:
                 storage.remove_current_value(selected_id, row["Date"])
             st.success(f"Deleted {n_snap_selected} snapshot{'s' if n_snap_selected != 1 else ''}.")
             st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Delete account
+# ---------------------------------------------------------------------------
+
+st.divider()
+if st.button(f"Delete {selected_name}", type="secondary"):
+    st.session_state["confirm_del_account"] = True
+
+if st.session_state.get("confirm_del_account"):
+    warn_col, yes_col, no_col = st.columns([4, 1, 1])
+    warn_col.warning(
+        f"Delete **{selected_name}** and all its entries and snapshots? This cannot be undone."
+    )
+    if yes_col.button("Yes, delete", key="yes_del_account"):
+        storage.remove_account(selected_id)
+        st.session_state.pop("confirm_del_account", None)
+        st.session_state.pop("selected_account_id", None)
+        st.rerun()
+    if no_col.button("Cancel", key="no_del_account"):
+        st.session_state.pop("confirm_del_account", None)
+        st.rerun()
