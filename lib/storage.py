@@ -864,17 +864,30 @@ def get_ticker_price_on_date(
     price from the most recent prior trading day that is available in the
     cache.  Returns None if no price exists on or before the requested date.
     """
+    result = get_ticker_price_and_date(ticker, on_date, price_type)
+    return result[1] if result is not None else None
+
+
+def get_ticker_price_and_date(
+    ticker: str, on_date: date | str, price_type: str = "close"
+) -> tuple[date, float] | None:
+    """Like get_ticker_price_on_date but also returns the actual price date.
+
+    Returns (effective_date, price) where effective_date is the trading day
+    whose price was used (may be earlier than on_date for weekends/holidays),
+    or None if no price exists on or before the requested date.
+    """
     if price_type not in VALID_PRICE_TYPES:
         raise ValueError(f"price_type must be one of {sorted(VALID_PRICE_TYPES)}, got {price_type!r}")
     prices = load_ticker_prices(ticker)
     if prices.is_empty():
         return None
     date_str = _coerce_date(on_date).isoformat()
-    # Keep rows on or before the requested date, pick the latest one.
     candidates = prices.filter(pl.col("date") <= date_str).sort("date")
     if candidates.is_empty():
         return None
-    return float(candidates.row(-1, named=True)[price_type])
+    row = candidates.row(-1, named=True)
+    return _coerce_date(row["date"]), float(row[price_type])
 
 
 def compute_ticker_snapshots(

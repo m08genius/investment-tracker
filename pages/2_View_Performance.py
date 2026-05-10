@@ -155,8 +155,9 @@ for row in accounts.iter_rows(named=True):
     current_val_date: date = valuation_date
     if is_ticker and ticker_sym:
         total_shares = float(entries["shares"].sum() or 0.0)
-        close_price = storage.get_ticker_price_on_date(ticker_sym, valuation_date, "close")
-        if close_price is not None:
+        price_result = storage.get_ticker_price_and_date(ticker_sym, valuation_date, "close")
+        if price_result is not None:
+            current_val_date, close_price = price_result
             current_val = total_shares * close_price
     else:
         latest = storage.get_latest_snapshot(aid)
@@ -247,10 +248,10 @@ else:
         ]
         if acct["is_ticker"] and acct["ticker"]:
             total_shares = float(entries["shares"].sum() or 0.0)
-            close_price = storage.get_ticker_price_on_date(acct["ticker"], valuation_date, "close")
-            if close_price is not None:
+            price_result = storage.get_ticker_price_and_date(acct["ticker"], valuation_date, "close")
+            if price_result is not None:
                 agg_flows.extend(cash_flows)
-                agg_value += total_shares * close_price
+                agg_value += total_shares * price_result[1]
             else:
                 missing.append(all_account_names[aid])
         else:
