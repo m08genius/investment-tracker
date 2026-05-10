@@ -73,7 +73,6 @@ ENTRIES_SCHEMA: dict[str, pl.DataType] = {
     "amount":         pl.Float64,
     "entry_time":     pl.Utf8,
     "note":           pl.Utf8,
-    "snapshot_time":  pl.Utf8,
     "snapshot_value": pl.Float64,
 }
 
@@ -141,6 +140,17 @@ def _coerce_date(d: date | str) -> date:
 # One-time migration: current_values.csv → entries.csv snapshot columns
 # ---------------------------------------------------------------------------
 
+def _maybe_drop_snapshot_time_column() -> None:
+    """If entries.csv has the legacy snapshot_time column, drop it and rewrite."""
+    if not ENTRIES_PATH.exists():
+        return
+    df = pl.read_csv(ENTRIES_PATH)
+    if "snapshot_time" not in df.columns:
+        return
+    df = df.drop("snapshot_time")
+    _atomic_write_csv(df.select(list(ENTRIES_SCHEMA.keys())), ENTRIES_PATH)
+
+
 def _maybe_migrate_current_values() -> None:
     """
     If the legacy current_values.csv still exists, fold its rows into the
@@ -172,7 +182,6 @@ def _maybe_migrate_current_values() -> None:
         )
         if df.filter(mask).height > 0:
             df = df.with_columns(
-                pl.when(mask).then(pl.lit(date_str)).otherwise(pl.col("snapshot_time")).alias("snapshot_time"),
                 pl.when(mask).then(pl.lit(value)).otherwise(pl.col("snapshot_value")).alias("snapshot_value"),
             )
         else:
@@ -184,7 +193,6 @@ def _maybe_migrate_current_values() -> None:
                     "amount": [0.0],
                     "entry_time": [date_str],
                     "note": [""],
-                    "snapshot_time": [date_str],
                     "snapshot_value": [value],
                 },
                 schema=ENTRIES_SCHEMA,
@@ -259,6 +267,7 @@ def get_account(account_id: str) -> dict | None:
 
 def load_entries(account_id: str | None = None) -> pl.DataFrame:
     """Load entries, optionally filtered to one account, sorted by entry_time."""
+    _maybe_drop_snapshot_time_column()
     _maybe_migrate_current_values()
     df = _read_or_empty(ENTRIES_PATH, ENTRIES_SCHEMA)
     if account_id is not None:
@@ -277,15 +286,15 @@ def add_entry(
     entry_date: date | str,
     note: str = "",
     *,
-    snapshot_time: date | str | None = None,
     snapshot_value: float | None = None,
 ) -> str:
     """
     Add a cash flow. Sign convention: positive = deposit, negative = withdrawal.
     Future-dated entries are rejected.
 
-    Optionally attach a portfolio snapshot on the same or a different date by
-    passing snapshot_time and snapshot_value.
+    If a pure snapshot row (amount=0) already exists on entry_date, the cash
+    flow is merged into that row rather than creating a duplicate.
+    Optionally attach a portfolio snapshot value (entry_time doubles as snapshot date).
     """
     if get_account(account_id) is None:
         raise ValueError(f"No account with id {account_id!r}.")
@@ -294,13 +303,12 @@ def add_entry(
     if entry_date > date.today():
         raise ValueError("Entry date cannot be in the future.")
 
-    snap_time_str = _coerce_date(snapshot_time).isoformat() if snapshot_time is not None else None
     snap_val = float(snapshot_value) if snapshot_value is not None else None
-
     existing = load_entries(account_id)
     date_str = entry_date.isoformat()
 
     if float(amount) != 0.0:
+        # Reject if a non-zero entry already occupies this date.
         if existing.filter(
             (pl.col("amount") != 0.0) & (pl.col("entry_time") == date_str)
         ).height > 0:
@@ -309,12 +317,27 @@ def add_entry(
                 "Delete the existing entry first or use a different date."
             )
 
-    if snap_time_str is not None:
-        if existing.filter(pl.col("snapshot_time") == snap_time_str).height > 0:
-            raise ValueError(
-                f"A snapshot already exists for {snap_time_str} on this account. "
-                "Delete the existing snapshot first or use a different date."
+        # If a pure snapshot row exists on the same date, merge into it.
+        pure_snaps = existing.filter(
+            (pl.col("amount") == 0.0) & (pl.col("entry_time") == date_str)
+        )
+        if pure_snaps.height > 0:
+            existing_row = pure_snaps.row(0, named=True)
+            merged_snap = snap_val if snap_val is not None else existing_row["snapshot_value"]
+            then_snap = pl.lit(float(merged_snap)) if merged_snap is not None else pl.lit(None, dtype=pl.Float64)
+            df = load_entries()
+            mask = (
+                (pl.col("account_id") == account_id)
+                & (pl.col("entry_time") == date_str)
+                & (pl.col("amount") == 0.0)
             )
+            df = df.with_columns(
+                pl.when(mask).then(pl.lit(float(amount))).otherwise(pl.col("amount")).alias("amount"),
+                pl.when(mask).then(pl.lit(note.strip())).otherwise(pl.col("note")).alias("note"),
+                pl.when(mask).then(then_snap).otherwise(pl.col("snapshot_value")).alias("snapshot_value"),
+            )
+            save_entries(df)
+            return existing_row["entry_id"]
 
     new_id = _new_id()
     new_row = pl.DataFrame(
@@ -322,9 +345,8 @@ def add_entry(
             "entry_id": [new_id],
             "account_id": [account_id],
             "amount": [float(amount)],
-            "entry_time": [entry_date.isoformat()],
+            "entry_time": [date_str],
             "note": [note.strip()],
-            "snapshot_time": [snap_time_str],
             "snapshot_value": [snap_val],
         },
         schema=ENTRIES_SCHEMA,
@@ -358,7 +380,6 @@ def add_entries_bulk(rows: list[dict]) -> list[str]:
         "amount": [],
         "entry_time": [],
         "note": [],
-        "snapshot_time": [],
         "snapshot_value": [],
     }
     for r in rows:
@@ -372,7 +393,6 @@ def add_entries_bulk(rows: list[dict]) -> list[str]:
         new_records["amount"].append(float(r["amount"]))
         new_records["entry_time"].append(d.isoformat())
         new_records["note"].append(r.get("note", "").strip())
-        new_records["snapshot_time"].append(None)
         new_records["snapshot_value"].append(None)
 
     new_df = pl.DataFrame(new_records, schema=ENTRIES_SCHEMA)
@@ -407,7 +427,7 @@ def load_snapshots(account_id: str | None = None) -> pl.DataFrame:
     return (
         df.filter(pl.col("snapshot_value").is_not_null())
         .select(
-            pl.col("snapshot_time").alias("as_of_date"),
+            pl.col("entry_time").alias("as_of_date"),
             pl.col("snapshot_value").alias("value"),
         )
         .sort("as_of_date")
@@ -433,7 +453,7 @@ def set_snapshot(
     date_str = _coerce_date(as_of_date).isoformat()
 
     df = load_entries()
-    mask = (pl.col("account_id") == account_id) & (pl.col("snapshot_time") == date_str)
+    mask = (pl.col("account_id") == account_id) & (pl.col("entry_time") == date_str)
 
     if df.filter(mask).height > 0:
         df = df.with_columns(
@@ -450,7 +470,6 @@ def set_snapshot(
                 "amount": [0.0],
                 "entry_time": [date_str],
                 "note": [""],
-                "snapshot_time": [date_str],
                 "snapshot_value": [float(value)],
             },
             schema=ENTRIES_SCHEMA,
@@ -480,21 +499,17 @@ def remove_snapshot(account_id: str, as_of_date: date | str) -> None:
     """
     date_str = _coerce_date(as_of_date).isoformat()
     df = load_entries()
-    mask = (pl.col("account_id") == account_id) & (pl.col("snapshot_time") == date_str)
+    mask = (pl.col("account_id") == account_id) & (pl.col("entry_time") == date_str)
 
     matched = df.filter(mask)
     if matched.is_empty():
         return
 
-    # If ALL matched rows are pure snapshots, delete them; otherwise null fields.
+    # Pure snapshot rows (amount==0) are deleted entirely; entries keep their cash flow.
     if (matched["amount"] == 0.0).all():
         df = df.filter(~mask)
     else:
         df = df.with_columns(
-            pl.when(mask)
-            .then(pl.lit(None, dtype=pl.Utf8))
-            .otherwise(pl.col("snapshot_time"))
-            .alias("snapshot_time"),
             pl.when(mask)
             .then(pl.lit(None, dtype=pl.Float64))
             .otherwise(pl.col("snapshot_value"))

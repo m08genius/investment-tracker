@@ -108,13 +108,17 @@ def test_add_entry_rejects_duplicate_entry_time():
         storage.add_entry(aid, 200.0, date(2024, 1, 1))
 
 
-def test_add_entry_rejects_duplicate_snapshot_time():
+def test_add_entry_merges_into_pure_snapshot_row():
+    """Adding a cash flow on a date that already has a pure snapshot merges into it."""
     aid = storage.add_account("A1")
-    storage.add_entry(aid, 100.0, date(2024, 1, 1),
-                      snapshot_time=date(2024, 1, 1), snapshot_value=1000.0)
-    with pytest.raises(ValueError, match="snapshot already exists"):
-        storage.add_entry(aid, 200.0, date(2024, 2, 1),
-                          snapshot_time=date(2024, 1, 1), snapshot_value=999.0)
+    storage.set_snapshot(aid, 1000.0, date(2024, 1, 1))
+    storage.add_entry(aid, 200.0, date(2024, 1, 1))
+
+    entries = storage.load_entries(aid)
+    assert entries.height == 1   # merged into one row
+    row = entries.row(0, named=True)
+    assert row["amount"] == 200.0
+    assert row["snapshot_value"] == 1000.0
 
 
 def test_add_entry_accepts_iso_date_string():
@@ -237,13 +241,12 @@ def test_get_latest_snapshot_none_for_no_snapshots():
 
 def test_add_entry_with_snapshot_attaches_to_row():
     aid = storage.add_account("A1")
-    storage.add_entry(aid, 500.0, date(2024, 3, 1), snapshot_time=date(2024, 3, 1), snapshot_value=1500.0)
+    storage.add_entry(aid, 500.0, date(2024, 3, 1), snapshot_value=1500.0)
 
     entries = storage.load_entries(aid)
     assert entries.height == 1
     row = entries.row(0, named=True)
     assert row["amount"] == 500.0
-    assert row["snapshot_time"] == "2024-03-01"
     assert row["snapshot_value"] == 1500.0
 
     snaps = storage.load_snapshots(aid)
@@ -262,7 +265,7 @@ def test_remove_snapshot_deletes_pure_snapshot_row():
 
 def test_remove_snapshot_nulls_fields_on_real_entry():
     aid = storage.add_account("A1")
-    storage.add_entry(aid, 500.0, date(2024, 3, 1), snapshot_time=date(2024, 3, 1), snapshot_value=1500.0)
+    storage.add_entry(aid, 500.0, date(2024, 3, 1), snapshot_value=1500.0)
     storage.remove_snapshot(aid, date(2024, 3, 1))
 
     # Entry still exists
@@ -409,7 +412,7 @@ def test_full_round_trip_through_csv():
     meta = storage.load_ticker_metadata()
 
     assert accounts.height == 2
-    assert entries.height == 5   # 3 cash-flow entries + 2 pure snapshot rows
+    assert entries.height == 5   # 3 cash-flow entries + 2 pure-snapshot rows (amount=0)
     assert snaps_a1.height == 1
     assert snaps_a2.height == 1
     assert voo.height == 1
