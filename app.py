@@ -41,10 +41,8 @@ st.divider()
 st.subheader("Pages")
 st.write(
     """
-    - **Accounts** — add/remove accounts and record cash flows (deposits and withdrawals),
-      including recurring deposits (weekly, biweekly, semi-monthly, monthly).
-    - **Snapshots** — record the current market value of each account over time.
-      Required for TWRR; also used for MWRR.
+    - **Accounts** — add/remove accounts, record deposits and withdrawals (including
+      recurring), and manage portfolio value snapshots for TWRR.
     - **View Performance** — compare your MWRR and TWRR against one or more market
       index tickers.
     - **Ticker Data** — manage cached ticker price data. Add new tickers, refresh
