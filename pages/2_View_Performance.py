@@ -5,9 +5,10 @@ aggregate, and compare against cached tickers.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
-import polars as pl
+import pandas as pd
 import streamlit as st
 
 from lib import returns, simulation, storage
@@ -17,7 +18,7 @@ st.set_page_config(page_title="View Performance", page_icon="📈", layout="wide
 st.title("📈 View Performance")
 
 st.caption(
-    "Current values are entered on the **Snapshots** page. "
+    "Current values are entered on the **Accounts** page (Snapshot entries tab). "
     "MWRR uses the most recent snapshot; TWRR uses all snapshots over time."
 )
 
@@ -51,23 +52,27 @@ show_twrr = st.checkbox(
     "Show TWRR columns",
     value=False,
     help="Time-Weighted Rate of Return. Requires ≥ 2 snapshots per account. "
-         "Add snapshots on the Snapshots page.",
+         "Add snapshots on the Accounts page.",
 )
 
 valuation_date = date.today()
 
+_GREEN = "background-color: #d4edda"
+_RED   = "background-color: #f8d7da"
 
-def _format_rate(r: float | None) -> str:
-    if r is None:
+
+def _fmt(x: object) -> str:
+    """Format a rate cell: float → percentage string, None/NaN → '—'."""
+    if x is None or (isinstance(x, float) and math.isnan(x)):
         return "—"
-    return f"{r * 100:.2f}%"
+    return f"{float(x) * 100:.2f}%"
 
 
 # ---------------------------------------------------------------------------
-# Build the comparison table
+# Build the comparison table (raw floats, None for missing)
 # ---------------------------------------------------------------------------
 
-rows = []
+rows: list[dict] = []
 all_warnings: list[str] = []
 
 aggregate_flows: list[tuple[date, float]] = []
@@ -97,7 +102,7 @@ for row in accounts.iter_rows(named=True):
         aggregate_flows.extend(cash_flows)
         aggregate_value += float(latest["value"])
 
-    row_data: dict[str, str] = {"Account": name, "Own MWRR": _format_rate(own_mwrr)}
+    row_data: dict = {"Account": name, "Own MWRR": own_mwrr}
 
     snaps: list[tuple[date, float]] = []
     if show_twrr:
@@ -105,54 +110,90 @@ for row in accounts.iter_rows(named=True):
             (date.fromisoformat(r["as_of_date"]), float(r["value"]))
             for r in storage.load_current_values(aid).iter_rows(named=True)
         ]
-        row_data["Own TWRR"] = _format_rate(returns.compute_twrr(snaps, cash_flows))
+        row_data["Own TWRR"] = returns.compute_twrr(snaps, cash_flows)
 
     for tk in selected_tickers:
         mwrr_rate, warns = simulation.compute_ticker_comparison_mwrr(
             cash_flows, tk, valuation_date,
         )
-        row_data[f"{tk} MWRR"] = _format_rate(mwrr_rate)
+        row_data[f"{tk} MWRR"] = mwrr_rate
         for w in warns:
             all_warnings.append(f"[{name} vs {tk}] {w}")
 
         if show_twrr:
             twrr_rate, twrr_warns = simulation.compute_ticker_comparison_twrr(snaps, tk)
-            row_data[f"{tk} TWRR"] = _format_rate(twrr_rate)
+            row_data[f"{tk} TWRR"] = twrr_rate
             for w in twrr_warns:
                 all_warnings.append(f"[{name} vs {tk} TWRR] {w}")
 
     rows.append(row_data)
 
 
-# Aggregate row
-agg_row: dict[str, str] = {"Account": "**All accounts (aggregate)**"}
+# Aggregate row (TWRR always None — not meaningful across accounts)
+agg_own_mwrr: float | None = None
 if aggregate_eligible and aggregate_flows:
-    agg_rate = returns.compute_mwrr(aggregate_flows, aggregate_value, valuation_date)
-    agg_row["Own MWRR"] = _format_rate(agg_rate)
-    if show_twrr:
-        agg_row["Own TWRR"] = "—"
-    for tk in selected_tickers:
+    agg_own_mwrr = returns.compute_mwrr(aggregate_flows, aggregate_value, valuation_date)
+
+agg_row: dict = {"Account": "All accounts (aggregate)", "Own MWRR": agg_own_mwrr}
+if show_twrr:
+    agg_row["Own TWRR"] = None
+
+for tk in selected_tickers:
+    if aggregate_eligible and aggregate_flows:
         rate, warns = simulation.compute_ticker_comparison_mwrr(
             aggregate_flows, tk, valuation_date,
         )
-        agg_row[f"{tk} MWRR"] = _format_rate(rate)
+        agg_row[f"{tk} MWRR"] = rate
         for w in warns:
             all_warnings.append(f"[Aggregate vs {tk}] {w}")
-        if show_twrr:
-            agg_row[f"{tk} TWRR"] = "—"
-else:
-    agg_row["Own MWRR"] = "—"
+    else:
+        agg_row[f"{tk} MWRR"] = None
     if show_twrr:
-        agg_row["Own TWRR"] = "—"
-    for tk in selected_tickers:
-        agg_row[f"{tk} MWRR"] = "—"
-        if show_twrr:
-            agg_row[f"{tk} TWRR"] = "—"
+        agg_row[f"{tk} TWRR"] = None
 
 rows.append(agg_row)
 
-display_df = pl.DataFrame(rows)
-st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------------------------
+# Style and display
+# ---------------------------------------------------------------------------
+
+df = pd.DataFrame(rows)
+rate_cols = [c for c in df.columns if c != "Account"]
+
+# Replace Python None with NaN so pandas handles it uniformly.
+df[rate_cols] = df[rate_cols].astype(float)
+
+mwrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "MWRR" in c]
+twrr_ticker_cols = [c for c in rate_cols if c not in ("Own MWRR", "Own TWRR") and "TWRR" in c]
+
+
+def _color_row(row: pd.Series) -> list[str]:
+    styles = [""] * len(row)
+    col_idx = {c: i for i, c in enumerate(row.index)}
+
+    own_mwrr = row.get("Own MWRR")
+    own_twrr = row.get("Own TWRR") if "Own TWRR" in row.index else float("nan")
+
+    for col in mwrr_ticker_cols:
+        val = row[col]
+        if pd.isna(val) or pd.isna(own_mwrr):
+            continue
+        styles[col_idx[col]] = _GREEN if val > own_mwrr else (_RED if val < own_mwrr else "")
+
+    for col in twrr_ticker_cols:
+        val = row[col]
+        if pd.isna(val) or pd.isna(own_twrr):
+            continue
+        styles[col_idx[col]] = _GREEN if val > own_twrr else (_RED if val < own_twrr else "")
+
+    return styles
+
+
+fmt_dict = {col: _fmt for col in rate_cols}
+styled = df.style.apply(_color_row, axis=1).format(fmt_dict, na_rep="—")
+
+st.dataframe(styled, use_container_width=True, hide_index=True)
 
 if show_twrr:
     st.caption(

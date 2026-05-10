@@ -11,7 +11,9 @@
       "Bash(conda info *)",
       "Bash(python3 -m pytest --version)",
       "Bash(git push *)",
-      "Bash(git commit -m 'Use list_active_tickers\\(\\) in UI; list_cached_tickers\\(\\) is now internal only *)"
+      "Bash(git commit -m 'Use list_active_tickers\\(\\) in UI; list_cached_tickers\\(\\) is now internal only *)",
+      "Bash(git commit -m 'Track ticker price data in git; exclude personal account data *)",
+      "Bash(python -m pytest tests/ -q)"
     ]
   }
 }
