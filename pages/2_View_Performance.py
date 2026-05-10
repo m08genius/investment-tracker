@@ -18,7 +18,7 @@ st.set_page_config(page_title="View Performance", page_icon="📈", layout="wide
 st.title("📈 View Performance")
 
 st.caption(
-    "Current values are entered on the **Accounts** page (Snapshot entries tab). "
+    "Snapshot entries are added on the **Accounts** page (Snapshot entries tab). "
     "MWRR uses the most recent snapshot; TWRR uses all snapshots over time."
 )
 
@@ -34,6 +34,21 @@ if accounts.is_empty():
 
 cached_tickers = storage.list_active_tickers()
 
+# perf_tickers_saved / perf_twrr_saved are non-widget keys that survive page navigation.
+# perf_tickers_widget / perf_twrr_widget are widget keys managed by Streamlit within the page.
+# On first render after navigation the widget keys are absent, so we seed them from the saved keys.
+if "perf_tickers_saved" not in st.session_state:
+    st.session_state["perf_tickers_saved"] = cached_tickers[:1] if cached_tickers else []
+if "perf_twrr_saved" not in st.session_state:
+    st.session_state["perf_twrr_saved"] = False
+
+saved_tickers = [t for t in st.session_state["perf_tickers_saved"] if t in cached_tickers]
+
+if "perf_tickers_widget" not in st.session_state:
+    st.session_state["perf_tickers_widget"] = saved_tickers
+if "perf_twrr_widget" not in st.session_state:
+    st.session_state["perf_twrr_widget"] = st.session_state["perf_twrr_saved"]
+
 if not cached_tickers:
     st.info(
         "No cached tickers yet. Visit **Ticker Data** to add one (e.g. VOO, FXAIX) "
@@ -44,16 +59,18 @@ else:
     selected_tickers = st.multiselect(
         "Compare against tickers",
         options=cached_tickers,
-        default=cached_tickers[:1] if cached_tickers else [],
+        key="perf_tickers_widget",
         help="Choose one or more cached tickers to simulate as a comparison.",
     )
+    st.session_state["perf_tickers_saved"] = selected_tickers
 
 show_twrr = st.checkbox(
     "Show TWRR columns",
-    value=False,
+    key="perf_twrr_widget",
     help="Time-Weighted Rate of Return. Requires ≥ 2 snapshots per account. "
          "Add snapshots on the Accounts page.",
 )
+st.session_state["perf_twrr_saved"] = show_twrr
 
 valuation_date = date.today()
 
@@ -208,7 +225,7 @@ if not aggregate_eligible:
     )
     st.caption(
         f"_Aggregate row unavailable: {n_missing} of {accounts.height} accounts "
-        f"are missing a current value._"
+        f"are missing a snapshot entry._"
     )
 
 # Show warnings (deduplicated, capped)

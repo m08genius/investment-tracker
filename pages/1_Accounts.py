@@ -13,6 +13,15 @@ import streamlit as st
 from lib import recurring, storage
 
 
+def _parse_dollar(text: str) -> float:
+    """Parse a dollar amount string, accepting commas and $ signs."""
+    try:
+        value = float(text.replace(",", "").replace("$", "").strip())
+    except ValueError:
+        raise ValueError(f"Invalid amount '{text}'. Enter a number like 1000 or 1,000.00")
+    return value
+
+
 st.set_page_config(page_title="Accounts", page_icon="💼", layout="wide")
 st.title("💼 Accounts")
 
@@ -125,56 +134,72 @@ tab_deposits, tab_snapshots = st.tabs(["Deposit entries", "Snapshot entries"])
 with tab_deposits:
 
     # ----- Add single entry -----
+    _last = st.session_state.get("last_single_entry", {})
+    _def_type_idx = 0 if _last.get("entry_type", "Deposit") == "Deposit" else 1
+    _def_amount = _last.get("amount", 100.0)
+    _def_date = _last.get("entry_date", date.today())
+    _def_note = _last.get("note", "")
+    _def_save_snap = _last.get("save_snapshot", False)
+
     with st.expander("➕ Add single entry", expanded=True):
         with st.form("single_entry_form", clear_on_submit=True):
             c1, c2, c3 = st.columns([1, 1, 1])
             entry_type = c1.radio(
                 "Type",
                 ["Deposit", "Withdrawal"],
+                index=_def_type_idx,
                 horizontal=True,
             )
-            amount = c2.number_input(
+            amount_str = c2.text_input(
                 "Amount ($)",
-                min_value=0.01,
-                step=100.0,
-                value=100.0,
+                value=f"{_def_amount:,.2f}",
+                placeholder="e.g. 1,000.00",
                 help="Always enter a positive number. Withdrawals are stored as negative internally.",
             )
             entry_date = c3.date_input(
                 "Date",
-                value=date.today(),
+                value=_def_date,
                 max_value=date.today(),
             )
-            note = st.text_input("Note (optional)")
-
             st.divider()
             sc1, sc2 = st.columns([1, 2])
             save_snapshot = sc1.checkbox(
-                "Also record current value",
-                value=False,
-                help="Save a portfolio value snapshot on the same date. "
+                "Also record snapshot entry",
+                value=_def_save_snap,
+                help="Save a snapshot entry on the same date. "
                      "Useful for TWRR on the View Performance page.",
             )
-            snapshot_value = sc2.number_input(
-                "Current value ($)",
-                min_value=0.0,
-                step=100.0,
-                value=0.0,
-                disabled=not save_snapshot,
+            snapshot_value_str = sc2.text_input(
+                "Snapshot value ($)",
+                value="",
+                placeholder="e.g. 12,345.67",
                 key="single_entry_snapshot_val",
                 help="Enter the total portfolio value as shown in your brokerage account "
                      "after this transaction has settled. This already includes the deposit/withdrawal.",
             )
 
+            note = st.text_input("Note (optional)", value=_def_note)
+
             submitted = st.form_submit_button("Add entry")
             if submitted:
                 try:
+                    amount = _parse_dollar(amount_str)
+                    if amount <= 0:
+                        raise ValueError("Amount must be greater than 0.")
                     signed = amount if entry_type == "Deposit" else -amount
                     storage.add_entry(selected_id, signed, entry_date, note)
+                    st.session_state["last_single_entry"] = {
+                        "entry_type": entry_type,
+                        "amount": amount,
+                        "entry_date": entry_date,
+                        "note": note,
+                        "save_snapshot": save_snapshot,
+                    }
                     msg = f"Added {entry_type.lower()} of ${amount:,.2f} on {entry_date.isoformat()}"
                     if save_snapshot:
+                        snapshot_value = _parse_dollar(snapshot_value_str) if snapshot_value_str.strip() else 0.0
                         storage.set_current_value(selected_id, snapshot_value, entry_date)
-                        msg += f" · saved current value ${snapshot_value:,.2f}"
+                        msg += f" · saved snapshot entry ${snapshot_value:,.2f}"
                     st.success(msg)
                     st.rerun()
                 except ValueError as e:
@@ -325,13 +350,13 @@ with tab_deposits:
     else:
         display = entries.with_columns(
             pl.when(pl.col("amount") >= 0).then(pl.lit("Deposit")).otherwise(pl.lit("Withdrawal")).alias("Type"),
-            pl.col("amount").abs().alias("AbsAmount"),
+            pl.col("amount").abs().map_elements(lambda x: f"${x:,.2f}", return_dtype=pl.Utf8).alias("Amount"),
             pl.lit(False).alias("__delete"),
         ).select(
             pl.col("__delete").alias("Delete?"),
             pl.col("date").alias("Date"),
             pl.col("Type"),
-            pl.col("AbsAmount").alias("Amount"),
+            pl.col("Amount"),
             pl.col("note").alias("Note"),
             pl.col("entry_id"),
         )
@@ -342,14 +367,14 @@ with tab_deposits:
                 "Delete?": st.column_config.CheckboxColumn(default=False),
                 "Date": st.column_config.TextColumn(disabled=True),
                 "Type": st.column_config.TextColumn(disabled=True),
-                "Amount": st.column_config.NumberColumn(format="$%.2f", disabled=True),
+                "Amount": st.column_config.TextColumn(disabled=True),
                 "Note": st.column_config.TextColumn(disabled=True),
                 "entry_id": None,
             },
             hide_index=True,
             use_container_width=True,
             num_rows="fixed",
-            key="entries_editor",
+            key=f"entries_editor_{selected_id}",
         )
 
         if not isinstance(edited, pl.DataFrame):
@@ -379,21 +404,31 @@ with tab_snapshots:
     )
 
     # ----- Add snapshot -----
+    _last_snap = st.session_state.get(f"last_snapshot_{selected_id}", {})
+    _def_snap_val = _last_snap.get("value", 0.0)
+    _def_snap_date = _last_snap.get("as_of_date", date.today())
+
     with st.expander("➕ Add snapshot", expanded=True):
         with st.form(f"snapshot_form_{selected_id}", clear_on_submit=True):
             c1, c2, c3 = st.columns([2, 2, 1])
-            new_val = c1.number_input(
-                "Current value ($)",
-                min_value=0.0,
-                step=100.0,
-                value=0.0,
+            new_val_str = c1.text_input(
+                "Snapshot value ($)",
+                value=f"{_def_snap_val:,.2f}" if _def_snap_val else "",
+                placeholder="e.g. 12,345.67",
                 help="Enter the total portfolio value as shown in your brokerage account. "
                      "This should reflect all settled transactions on this date.",
             )
-            new_as_of = c2.date_input("As of date", value=date.today(), max_value=date.today())
+            new_as_of = c2.date_input("As of date", value=_def_snap_date, max_value=date.today())
             if c3.form_submit_button("Save", type="primary"):
                 try:
+                    new_val = _parse_dollar(new_val_str)
+                    if new_val < 0:
+                        raise ValueError("Snapshot value cannot be negative.")
                     storage.set_current_value(selected_id, new_val, new_as_of)
+                    st.session_state[f"last_snapshot_{selected_id}"] = {
+                        "value": new_val,
+                        "as_of_date": new_as_of,
+                    }
                     st.success(f"Saved ${new_val:,.2f} as of {new_as_of.isoformat()}.")
                     st.rerun()
                 except ValueError as e:
@@ -412,10 +447,13 @@ with tab_snapshots:
         latest = snaps["as_of_date"].max()
         st.caption(f"{n} snapshot{'s' if n != 1 else ''} · {earliest} → {latest}")
 
-        snap_display = snaps.with_columns(pl.lit(False).alias("Delete?")).select(
+        snap_display = snaps.with_columns(
+            pl.lit(False).alias("Delete?"),
+            pl.col("value").map_elements(lambda x: f"${x:,.2f}", return_dtype=pl.Utf8).alias("Value"),
+        ).select(
             pl.col("Delete?"),
             pl.col("as_of_date").alias("Date"),
-            pl.col("value").alias("Value"),
+            pl.col("Value"),
         )
 
         snap_edited = st.data_editor(
@@ -423,12 +461,12 @@ with tab_snapshots:
             column_config={
                 "Delete?": st.column_config.CheckboxColumn(default=False),
                 "Date": st.column_config.TextColumn(disabled=True),
-                "Value": st.column_config.NumberColumn(format="$%.2f", disabled=True),
+                "Value": st.column_config.TextColumn(disabled=True),
             },
             hide_index=True,
             use_container_width=True,
             num_rows="fixed",
-            key="snaps_editor",
+            key=f"snaps_editor_{selected_id}",
         )
 
         if not isinstance(snap_edited, pl.DataFrame):
