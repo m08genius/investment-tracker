@@ -229,11 +229,22 @@ with st.expander("➕ Add entry", expanded=True):
                         f"No cached price for {ticker_symbol} on {entry_date}. "
                         "Refresh ticker data or use Custom."
                     )
-            snap_val_str = st.text_input(
-                "Portfolio value ($) — optional snapshot",
-                value=_last.get("snap_val_str", ""),
-                placeholder="e.g. 12,345.67",
-            )
+
+            # Portfolio value preview (computed from total shares × close price)
+            _existing_shares = float(_all_entries["shares"].sum() or 0.0)
+            _close_preview = storage.get_ticker_price_on_date(ticker_symbol, entry_date, "close")
+            try:
+                _preview_shares = _parse_shares(shares_str) if shares_str.strip() else None
+            except ValueError:
+                _preview_shares = None
+            if _close_preview is not None and _preview_shares is not None:
+                _total_after = _existing_shares + _preview_shares
+                _snap_preview = _total_after * _close_preview
+                st.info(
+                    f"Portfolio value after entry: "
+                    f"**{_total_after:g} shares × ${_close_preview:,.4f} = ${_snap_preview:,.2f}**"
+                )
+
             note = st.text_input("Note (optional)", value=_last.get("note", ""))
 
             if st.form_submit_button("Save", type="primary"):
@@ -257,11 +268,15 @@ with st.expander("➕ Add entry", expanded=True):
                     if price <= 0:
                         raise ValueError("Price per share must be greater than 0.")
                     amount = shares * price
-                    snap_val: float | None = None
-                    if snap_val_str.strip():
-                        snap_val = _parse_dollar(snap_val_str)
-                        if snap_val < 0:
-                            raise ValueError("Portfolio value cannot be negative.")
+
+                    # Auto-compute snapshot: total shares after × close price on that date.
+                    existing_shares = float(storage.load_entries(selected_id)["shares"].sum() or 0.0)
+                    total_shares_after = existing_shares + shares
+                    close_price = storage.get_ticker_price_on_date(ticker_symbol, entry_date, "close")
+                    snap_val: float | None = (
+                        total_shares_after * close_price if close_price is not None else None
+                    )
+
                     auto_note = note or f"{shares:g} shares @ ${price:,.4f}"
                     storage.add_entry(
                         selected_id, amount, entry_date, auto_note,
@@ -274,12 +289,15 @@ with st.expander("➕ Add entry", expanded=True):
                         "shares_str": shares_str,
                         "cost_basis_type": cost_basis_type,
                         "custom_price_str": custom_price_str,
-                        "snap_val_str": snap_val_str,
                         "note": note,
                     }
+                    snap_msg = (
+                        f" | portfolio value: **${snap_val:,.2f}**"
+                        if snap_val is not None else ""
+                    )
                     st.success(
                         f"{'Bought' if shares > 0 else 'Sold'} {abs(shares):g} shares "
-                        f"@ ${price:,.4f} = ${abs(amount):,.2f} on {entry_date}."
+                        f"@ ${price:,.4f} = ${abs(amount):,.2f} on {entry_date}.{snap_msg}"
                     )
                     st.rerun()
                 except ValueError as e:
