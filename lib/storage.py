@@ -357,6 +357,15 @@ def get_latest_current_value(account_id: str) -> dict | None:
     return df.sort("as_of_date", descending=True).row(0, named=True)
 
 
+def remove_current_value(account_id: str, as_of_date: date | str) -> None:
+    """Delete the snapshot for (account_id, as_of_date) if it exists."""
+    date_str = _coerce_date(as_of_date).isoformat()
+    df = load_current_values().filter(
+        ~((pl.col("account_id") == account_id) & (pl.col("as_of_date") == date_str))
+    )
+    save_current_values(df)
+
+
 # ---------------------------------------------------------------------------
 # Ticker prices
 # ---------------------------------------------------------------------------

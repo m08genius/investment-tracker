@@ -32,6 +32,7 @@ in the natural convention.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import numpy as np
@@ -149,3 +150,64 @@ def compute_mwrr(
     if not np.isfinite(rate):
         return None
     return float(rate)
+
+
+def compute_twrr(
+    snapshots: list[tuple[date, float]],
+    cash_flows: list[tuple[date, float]],
+) -> float | None:
+    """
+    Compute annualized TWRR by chain-linking sub-period returns.
+
+    Sub-periods are defined by consecutive (date, value) snapshots.
+    For each sub-period [T_{i-1}, T_i]:
+        denominator = V_{i-1} + sum(flows where T_{i-1} < flow.date <= T_i)
+        HPR_i = V_i / denominator - 1
+    TWRR = product(1 + HPR_i) annualized over the full snapshot span.
+
+    Parameters
+    ----------
+    snapshots
+        List of (date, value) pairs. At least 2 required.
+    cash_flows
+        List of (date, signed_amount) in storage convention (deposit positive,
+        withdrawal negative). May be empty.
+
+    Returns
+    -------
+    Annualized rate as a decimal, or None if insufficient data or computation
+    fails (< 2 snapshots, zero/negative denominator, non-finite result).
+    """
+    if len(snapshots) < 2:
+        return None
+
+    snaps = sorted(snapshots, key=lambda t: t[0])
+    flows_sorted = sorted(cash_flows, key=lambda t: t[0])
+
+    cumulative = 1.0
+    for i in range(1, len(snaps)):
+        t_prev, v_prev = snaps[i - 1]
+        t_cur, v_cur = snaps[i]
+
+        flows_sum = sum(
+            a for d, a in flows_sorted if t_prev < d <= t_cur
+        )
+        denominator = v_prev + flows_sum
+        if denominator <= 0:
+            return None
+
+        hpr = v_cur / denominator - 1
+        cumulative *= 1.0 + hpr
+
+    total_days = (snaps[-1][0] - snaps[0][0]).days
+    if total_days == 0:
+        return None
+
+    twrr_cumulative = cumulative - 1.0
+    if twrr_cumulative == -1.0:
+        return None
+
+    annualized = (1.0 + twrr_cumulative) ** (365.0 / total_days) - 1.0
+    if not math.isfinite(annualized):
+        return None
+    return annualized

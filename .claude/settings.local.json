@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Read(//Users/mayankgupta/miniconda3/envs/investment-tracker/bin/**)",
+      "Read(//Users/mayankgupta/anaconda3/envs/investment-tracker/bin/**)",
+      "Read(//Users/mayankgupta/**)",
+      "Bash(find /opt /usr/local ~/miniforge3 ~/micromamba -name pytest -path \"*/investment-tracker/*\" 2>/dev/null | head -3)",
+      "Bash(conda info *)",
+      "Bash(python3 -m pytest --version)"
+    ]
+  }
+}

@@ -8,6 +8,8 @@ import math
 import polars as pl
 import pytest
 
+import math as _math
+
 from lib import simulation, storage
 
 
@@ -253,3 +255,92 @@ def test_compute_comparison_with_withdrawal():
     assert rate is not None
     assert rate > 0
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# compute_ticker_comparison_twrr
+# ---------------------------------------------------------------------------
+
+def test_ticker_twrr_simple_price_growth():
+    """Price doubles over exactly one year -> TWRR ≈ 100%."""
+    _seed_ticker("VOO", [
+        ("2023-01-02", 100.0),
+        ("2024-01-02", 200.0),
+    ])
+    snaps = [(date(2023, 1, 2), 1000.0), (date(2024, 1, 2), 2000.0)]
+    rate, warnings = simulation.compute_ticker_comparison_twrr(snaps, "VOO")
+    assert rate is not None
+    assert _math.isclose(rate, 1.0, rel_tol=1e-3)
+    assert warnings == []
+
+
+def test_ticker_twrr_three_snapshots_chain_links():
+    """Chain-link two sub-periods: 20% then 25% -> cumulative 50%."""
+    _seed_ticker("VOO", [
+        ("2022-01-03", 100.0),
+        ("2023-01-02", 120.0),
+        ("2024-01-01", 150.0),
+    ])
+    snaps = [
+        (date(2022, 1, 3), 1000.0),
+        (date(2023, 1, 2), 1200.0),
+        (date(2024, 1, 1), 1500.0),
+    ]
+    rate, warnings = simulation.compute_ticker_comparison_twrr(snaps, "VOO")
+    assert rate is not None
+    total_days = (date(2024, 1, 1) - date(2022, 1, 3)).days
+    expected = 1.50 ** (365.0 / total_days) - 1
+    assert _math.isclose(rate, expected, rel_tol=1e-3)
+
+
+def test_ticker_twrr_fewer_than_2_snapshots_returns_none():
+    _seed_ticker("VOO", [("2024-01-02", 100.0)])
+    rate, warnings = simulation.compute_ticker_comparison_twrr(
+        [(date(2024, 1, 2), 1000.0)], "VOO"
+    )
+    assert rate is None
+    assert any("2 snapshots" in w for w in warnings)
+
+
+def test_ticker_twrr_uncached_ticker_returns_none():
+    snaps = [(date(2023, 1, 1), 1000.0), (date(2024, 1, 1), 2000.0)]
+    rate, warnings = simulation.compute_ticker_comparison_twrr(snaps, "NOPE")
+    assert rate is None
+    assert any("not cached" in w for w in warnings)
+
+
+def test_ticker_twrr_weekend_snapshot_uses_prior_price():
+    """Snapshot on a Saturday; _price_on_or_before picks Friday's price."""
+    _seed_ticker("VOO", [
+        ("2024-01-05", 100.0),   # Friday
+        ("2024-12-31", 150.0),   # Tuesday
+    ])
+    # Saturday Jan 6, 2024 as first snapshot date
+    snaps = [(date(2024, 1, 6), 1000.0), (date(2024, 12, 31), 1500.0)]
+    rate, warnings = simulation.compute_ticker_comparison_twrr(snaps, "VOO")
+    assert rate is not None
+    assert rate > 0
+
+
+def test_ticker_twrr_no_price_before_first_snapshot_returns_none():
+    """Ticker cache starts after the first snapshot date."""
+    _seed_ticker("VOO", [
+        ("2024-06-01", 100.0),
+        ("2024-12-31", 120.0),
+    ])
+    snaps = [(date(2024, 1, 1), 1000.0), (date(2024, 12, 31), 1200.0)]
+    rate, warnings = simulation.compute_ticker_comparison_twrr(snaps, "VOO")
+    assert rate is None
+    assert any("Cache for" in w or "No VOO price" in w for w in warnings)
+
+
+def test_ticker_twrr_cache_gap_guard():
+    """First snapshot is >7 days before cache start -> cache-gap warning."""
+    _seed_ticker("VOO", [
+        ("2024-02-01", 100.0),
+        ("2024-12-31", 120.0),
+    ])
+    snaps = [(date(2024, 1, 1), 1000.0), (date(2024, 12, 31), 1200.0)]
+    rate, warnings = simulation.compute_ticker_comparison_twrr(snaps, "VOO")
+    assert rate is None
+    assert any("Cache for" in w for w in warnings)

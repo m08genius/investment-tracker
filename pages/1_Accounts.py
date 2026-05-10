@@ -108,14 +108,34 @@ with tab_single:
             max_value=date.today(),
         )
         note = st.text_input("Note (optional)")
+
+        st.divider()
+        sc1, sc2 = st.columns([1, 2])
+        save_snapshot = sc1.checkbox(
+            "Also record current value",
+            value=False,
+            help="Save a portfolio value snapshot on the same date as this entry. "
+                 "Useful for computing TWRR on the View Performance page.",
+        )
+        snapshot_value = sc2.number_input(
+            "Current value ($)",
+            min_value=0.0,
+            step=100.0,
+            value=0.0,
+            disabled=not save_snapshot,
+            key="single_entry_snapshot_val",
+        )
+
         submitted = st.form_submit_button("Add entry")
         if submitted:
             try:
                 signed = amount if entry_type == "Deposit" else -amount
                 storage.add_entry(selected_id, signed, entry_date, note)
-                st.success(
-                    f"Added {entry_type.lower()} of ${amount:,.2f} on {entry_date.isoformat()}"
-                )
+                msg = f"Added {entry_type.lower()} of ${amount:,.2f} on {entry_date.isoformat()}"
+                if save_snapshot:
+                    storage.set_current_value(selected_id, snapshot_value, entry_date)
+                    msg += f" · saved current value ${snapshot_value:,.2f}"
+                st.success(msg)
                 st.rerun()
             except ValueError as e:
                 st.error(str(e))

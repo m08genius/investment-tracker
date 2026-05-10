@@ -22,6 +22,7 @@ as the final positive flow on the valuation date.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import polars as pl
@@ -166,3 +167,98 @@ def compute_ticker_comparison_mwrr(
             "MWRR did not converge for the simulated series."
         )
     return rate, warnings
+
+
+def compute_ticker_comparison_twrr(
+    snapshots: list[tuple[date, float]],
+    ticker: str,
+) -> tuple[float | None, list[str]]:
+    """
+    TWRR the ticker would have earned over the same sub-periods as the
+    account's snapshots.
+
+    For each sub-period [T_{i-1}, T_i]:
+        ticker_HPR = price(T_i) / price(T_{i-1}) - 1
+    using _price_on_or_before for both endpoints.
+
+    Parameters
+    ----------
+    snapshots
+        List of (date, value) pairs defining the sub-period boundaries.
+        At least 2 required.
+    ticker
+        Cached ticker symbol.
+
+    Returns
+    -------
+    (annualized_rate, warnings). Rate is None if computation is impossible.
+    """
+    warnings: list[str] = []
+
+    if len(snapshots) < 2:
+        warnings.append("Need at least 2 snapshots to compute ticker TWRR.")
+        return None, warnings
+
+    snaps = sorted(snapshots, key=lambda t: t[0])
+    t0 = snaps[0][0]
+
+    meta = storage.get_ticker_metadata(ticker)
+    if meta is None:
+        warnings.append(f"Ticker {ticker} not cached. Refresh ticker data.")
+        return None, warnings
+
+    prices = storage.load_ticker_prices(ticker)
+    if prices.is_empty():
+        warnings.append(f"No prices cached for {ticker}.")
+        return None, warnings
+
+    # Cache-gap guard: earliest snapshot must be coverable by the cache.
+    if meta["earliest_date"]:
+        earliest_cached = date.fromisoformat(meta["earliest_date"])
+        if (earliest_cached - t0).days > 7:
+            warnings.append(
+                f"Cache for {ticker} starts {earliest_cached.isoformat()}, "
+                f"but earliest snapshot is {t0.isoformat()}. "
+                f"Refresh ticker data with an earlier start date."
+            )
+            return None, warnings
+
+    price_column = meta["price_type"]
+
+    cumulative = 1.0
+    for i in range(1, len(snaps)):
+        t_prev = snaps[i - 1][0]
+        t_cur = snaps[i][0]
+
+        p_start = _price_on_or_before(prices, t_prev, price_column)
+        p_end = _price_on_or_before(prices, t_cur, price_column)
+
+        if p_start is None or p_start <= 0:
+            warnings.append(
+                f"No {ticker} price available on or before {t_prev.isoformat()}."
+            )
+            return None, warnings
+        if p_end is None or p_end <= 0:
+            warnings.append(
+                f"No {ticker} price available on or before {t_cur.isoformat()}."
+            )
+            return None, warnings
+
+        hpr = p_end / p_start - 1
+        cumulative *= 1.0 + hpr
+
+    total_days = (snaps[-1][0] - snaps[0][0]).days
+    if total_days == 0:
+        warnings.append("All snapshots are on the same date; cannot compute TWRR.")
+        return None, warnings
+
+    twrr_cumulative = cumulative - 1.0
+    if twrr_cumulative == -1.0:
+        return None, warnings
+
+    annualized = (1.0 + twrr_cumulative) ** (365.0 / total_days) - 1.0
+    if not math.isfinite(annualized):
+        warnings.append(f"TWRR result was not finite for {ticker}.")
+        return None, warnings
+
+    return annualized, warnings
