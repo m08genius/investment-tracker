@@ -366,7 +366,29 @@ def test_get_ticker_price_on_date_returns_none_for_missing():
         schema=storage.TICKER_PRICES_SCHEMA,
     )
     storage.upsert_ticker_prices("VOO", df)
-    assert storage.get_ticker_price_on_date("VOO", date(2024, 1, 3)) is None
+    # No data exists before 2024-01-02
+    assert storage.get_ticker_price_on_date("VOO", date(2024, 1, 1)) is None
+
+
+def test_get_ticker_price_on_date_falls_back_to_previous_trading_day():
+    """Weekend / holiday dates should return the most recent prior trading day."""
+    df = pl.DataFrame(
+        {
+            "date":  ["2024-01-05", "2024-01-08"],  # Friday, Monday
+            "open":  [100.0, 102.0],
+            "high":  [101.0, 103.0],
+            "low":   [99.0,  101.0],
+            "close": [100.5, 102.5],
+        },
+        schema=storage.TICKER_PRICES_SCHEMA,
+    )
+    storage.upsert_ticker_prices("VOO", df)
+    # Saturday 2024-01-06 → falls back to Friday 2024-01-05
+    assert storage.get_ticker_price_on_date("VOO", date(2024, 1, 6)) == 100.5
+    # Sunday 2024-01-07 → also falls back to Friday 2024-01-05
+    assert storage.get_ticker_price_on_date("VOO", date(2024, 1, 7)) == 100.5
+    # Monday itself returns Monday's price
+    assert storage.get_ticker_price_on_date("VOO", date(2024, 1, 8)) == 102.5
 
 
 # ---------------------------------------------------------------------------

@@ -811,15 +811,23 @@ def _refresh_ticker_metadata_dates(ticker: str, prices_df: pl.DataFrame) -> None
 def get_ticker_price_on_date(
     ticker: str, on_date: date | str, price_type: str = "close"
 ) -> float | None:
-    """Return the cached price for a ticker on a specific date, or None if not found."""
+    """Return the cached price for a ticker on a specific date.
+
+    If the market was closed on that date (weekend / holiday), returns the
+    price from the most recent prior trading day that is available in the
+    cache.  Returns None if no price exists on or before the requested date.
+    """
     if price_type not in VALID_PRICE_TYPES:
         raise ValueError(f"price_type must be one of {sorted(VALID_PRICE_TYPES)}, got {price_type!r}")
     prices = load_ticker_prices(ticker)
-    date_str = _coerce_date(on_date).isoformat()
-    row = prices.filter(pl.col("date") == date_str)
-    if row.is_empty():
+    if prices.is_empty():
         return None
-    return float(row.row(0, named=True)[price_type])
+    date_str = _coerce_date(on_date).isoformat()
+    # Keep rows on or before the requested date, pick the latest one.
+    candidates = prices.filter(pl.col("date") <= date_str).sort("date")
+    if candidates.is_empty():
+        return None
+    return float(candidates.row(-1, named=True)[price_type])
 
 
 def list_account_groups() -> list[str]:
