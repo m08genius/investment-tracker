@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 import math
 
-from lib.returns import compute_mwrr, compute_twrr
+from lib.returns import compute_mwrr, compute_twrr, enrich_snapshots_at_flow_dates
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +270,74 @@ def test_twrr_denominator_negative_returns_none():
     snaps = [(date(2023, 1, 1), 1000.0), (date(2024, 1, 1), 500.0)]
     flows = [(date(2023, 6, 1), -1500.0)]
     assert compute_twrr(snaps, flows) is None
+
+
+# ---------------------------------------------------------------------------
+# enrich_snapshots_at_flow_dates
+# ---------------------------------------------------------------------------
+
+def test_enrich_interpolates_midpoint():
+    """Cash flow halfway between two snapshots -> linearly interpolated value."""
+    snaps = [(date(2024, 1, 1), 10_000.0), (date(2024, 3, 1), 12_000.0)]
+    flows = [(date(2024, 2, 1), 500.0)]
+    result = enrich_snapshots_at_flow_dates(snaps, flows)
+    dates = [d for d, _ in result]
+    assert date(2024, 2, 1) in dates
+    # Jan 1 → Mar 1 is 60 days; Feb 1 is 31 days in (t ≈ 0.517)
+    t = (date(2024, 2, 1) - date(2024, 1, 1)).days / (date(2024, 3, 1) - date(2024, 1, 1)).days
+    expected = 10_000 + t * (12_000 - 10_000)
+    interpolated = dict(result)[date(2024, 2, 1)]
+    assert math.isclose(interpolated, expected, rel_tol=1e-9)
+
+
+def test_enrich_preserves_original_snapshots():
+    """Original snapshot values must not be changed."""
+    snaps = [(date(2024, 1, 1), 10_000.0), (date(2024, 3, 1), 12_000.0)]
+    flows = [(date(2024, 2, 1), 500.0)]
+    result = dict(enrich_snapshots_at_flow_dates(snaps, flows))
+    assert result[date(2024, 1, 1)] == 10_000.0
+    assert result[date(2024, 3, 1)] == 12_000.0
+
+
+def test_enrich_skips_flows_outside_snapshot_range():
+    """Flows before first or after last snapshot are not interpolated."""
+    snaps = [(date(2024, 2, 1), 10_000.0), (date(2024, 4, 1), 12_000.0)]
+    flows = [
+        (date(2024, 1, 1), 500.0),   # before first snapshot
+        (date(2024, 3, 1), 500.0),   # inside — should be interpolated
+        (date(2024, 5, 1), 500.0),   # after last snapshot
+    ]
+    result_dates = {d for d, _ in enrich_snapshots_at_flow_dates(snaps, flows)}
+    assert date(2024, 1, 1) not in result_dates
+    assert date(2024, 5, 1) not in result_dates
+    assert date(2024, 3, 1) in result_dates
+
+
+def test_enrich_flow_on_existing_snapshot_date_not_duplicated():
+    """If a flow falls exactly on a snapshot date, that date appears only once."""
+    snaps = [(date(2024, 1, 1), 10_000.0), (date(2024, 3, 1), 12_000.0)]
+    flows = [(date(2024, 1, 1), 500.0)]  # same date as first snapshot
+    result = enrich_snapshots_at_flow_dates(snaps, flows)
+    dates = [d for d, _ in result]
+    assert dates.count(date(2024, 1, 1)) == 1
+    assert dict(result)[date(2024, 1, 1)] == 10_000.0  # original value preserved
+
+
+def test_enrich_returns_sorted():
+    """Result must be sorted by date regardless of input order."""
+    snaps = [(date(2024, 3, 1), 12_000.0), (date(2024, 1, 1), 10_000.0)]
+    flows = [(date(2024, 2, 1), 500.0)]
+    result = enrich_snapshots_at_flow_dates(snaps, flows)
+    dates = [d for d, _ in result]
+    assert dates == sorted(dates)
+
+
+def test_enrich_empty_inputs():
+    """Empty snapshots or flows handled gracefully."""
+    assert enrich_snapshots_at_flow_dates([], []) == []
+    assert enrich_snapshots_at_flow_dates([], [(date(2024, 1, 1), 100.0)]) == []
+    snaps = [(date(2024, 1, 1), 1000.0), (date(2024, 3, 1), 1200.0)]
+    assert enrich_snapshots_at_flow_dates(snaps, []) == snaps
 
 
 def test_twrr_unsorted_snapshots_still_works():

@@ -830,6 +830,57 @@ def get_ticker_price_on_date(
     return float(candidates.row(-1, named=True)[price_type])
 
 
+def compute_ticker_snapshots(
+    account_id: str,
+    ticker: str,
+    through_date: date | None = None,
+) -> list[tuple[date, float]]:
+    """Compute portfolio-value snapshots for a ticker account on demand.
+
+    For each trade date (sorted), returns (date, cumulative_shares × close_price).
+    Multiple trades on the same date are collapsed into one point.
+    A final point is appended for *through_date* (defaults to today).
+
+    Returns an empty list if no cached prices are available.
+    This function is intentionally side-effect-free — call it any time without
+    worrying about stale stored data.
+    """
+    if through_date is None:
+        through_date = date.today()
+
+    entries = (
+        load_entries(account_id)
+        .filter(pl.col("shares") != 0.0)
+        .sort("entry_time")
+    )
+
+    snaps: list[tuple[date, float]] = []
+    cumulative_shares = 0.0
+
+    for row in entries.iter_rows(named=True):
+        cumulative_shares += row["shares"]
+        entry_date = _coerce_date(row["entry_time"])
+        close_price = get_ticker_price_on_date(ticker, entry_date, "close")
+        if close_price is None:
+            continue
+        value = cumulative_shares * close_price
+        if snaps and snaps[-1][0] == entry_date:
+            snaps[-1] = (entry_date, value)   # multiple trades same day → overwrite
+        else:
+            snaps.append((entry_date, value))
+
+    # Always append the terminal point at through_date.
+    final_close = get_ticker_price_on_date(ticker, through_date, "close")
+    if final_close is not None:
+        final_value = cumulative_shares * final_close
+        if snaps and snaps[-1][0] == through_date:
+            snaps[-1] = (through_date, final_value)
+        else:
+            snaps.append((through_date, final_value))
+
+    return snaps
+
+
 def list_account_groups() -> list[str]:
     """Return sorted list of distinct group_names across all accounts."""
     accounts = load_accounts()

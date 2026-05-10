@@ -211,3 +211,42 @@ def compute_twrr(
     if not math.isfinite(annualized):
         return None
     return annualized
+
+
+def enrich_snapshots_at_flow_dates(
+    snapshots: list[tuple[date, float]],
+    cash_flows: list[tuple[date, float]],
+) -> list[tuple[date, float]]:
+    """Insert linearly interpolated snapshot values at each cash flow date.
+
+    For non-ticker accounts, this adds a sub-period boundary at every
+    deposit/withdrawal so that TWRR sub-periods are as fine-grained as
+    the cash flow history, not just as coarse as the manually recorded
+    snapshots.
+
+    Only cash flow dates that fall **strictly between** two existing
+    snapshots are interpolated — no extrapolation outside the range.
+
+    Returns a new sorted list merging the original snapshots with the
+    interpolated points.  Existing snapshot dates are never overwritten.
+    """
+    if len(snapshots) < 2 or not cash_flows:
+        return list(snapshots)
+
+    snaps_sorted = sorted(snapshots)
+    result: dict[date, float] = dict(snaps_sorted)  # date → value; preserves originals
+
+    for d_cf, _ in cash_flows:
+        if d_cf in result:
+            continue  # already have a snapshot on this date
+        # Find surrounding snapshots
+        prev = next((s for s in reversed(snaps_sorted) if s[0] < d_cf), None)
+        nxt  = next((s for s in snaps_sorted           if s[0] > d_cf), None)
+        if prev is None or nxt is None:
+            continue  # outside snapshot range — skip
+        d_prev, v_prev = prev
+        d_next, v_next = nxt
+        t = (d_cf - d_prev).days / (d_next - d_prev).days
+        result[d_cf] = v_prev + t * (v_next - v_prev)
+
+    return sorted(result.items())

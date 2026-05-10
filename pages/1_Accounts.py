@@ -269,18 +269,10 @@ with st.expander("➕ Add entry", expanded=True):
                         raise ValueError("Price per share must be greater than 0.")
                     amount = shares * price
 
-                    # Auto-compute snapshot: total shares after × close price on that date.
-                    existing_shares = float(storage.load_entries(selected_id)["shares"].sum() or 0.0)
-                    total_shares_after = existing_shares + shares
-                    close_price = storage.get_ticker_price_on_date(ticker_symbol, entry_date, "close")
-                    snap_val: float | None = (
-                        total_shares_after * close_price if close_price is not None else None
-                    )
-
                     auto_note = note or f"{shares:g} shares @ ${price:,.4f}"
                     storage.add_entry(
                         selected_id, amount, entry_date, auto_note,
-                        snapshot_value=snap_val,
+                        snapshot_value=None,
                         shares=shares,
                         price_per_share=price,
                     )
@@ -291,13 +283,9 @@ with st.expander("➕ Add entry", expanded=True):
                         "custom_price_str": custom_price_str,
                         "note": note,
                     }
-                    snap_msg = (
-                        f" | portfolio value: **${snap_val:,.2f}**"
-                        if snap_val is not None else ""
-                    )
                     st.success(
                         f"{'Bought' if shares > 0 else 'Sold'} {abs(shares):g} shares "
-                        f"@ ${price:,.4f} = ${abs(amount):,.2f} on {entry_date}.{snap_msg}"
+                        f"@ ${price:,.4f} = ${abs(amount):,.2f} on {entry_date}."
                     )
                     st.rerun()
                 except ValueError as e:

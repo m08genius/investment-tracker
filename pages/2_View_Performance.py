@@ -172,17 +172,14 @@ for row in accounts.iter_rows(named=True):
 
     snaps: list[tuple[date, float]] = []
     if show_twrr:
-        snaps = [
-            (date.fromisoformat(r["as_of_date"]), float(r["value"]))
-            for r in storage.load_snapshots(aid).iter_rows(named=True)
-        ]
-        # For ticker accounts append/replace the current computed value so TWRR
-        # always terminates at the live portfolio value rather than a stale snapshot.
-        if is_ticker and ticker_sym and current_val is not None:
-            if snaps and snaps[-1][0] == current_val_date:
-                snaps[-1] = (current_val_date, current_val)
-            else:
-                snaps.append((current_val_date, current_val))
+        if is_ticker and ticker_sym:
+            snaps = storage.compute_ticker_snapshots(aid, ticker_sym, valuation_date)
+        else:
+            raw = [
+                (date.fromisoformat(r["as_of_date"]), float(r["value"]))
+                for r in storage.load_snapshots(aid).iter_rows(named=True)
+            ]
+            snaps = returns.enrich_snapshots_at_flow_dates(raw, cash_flows)
         row_data["Own TWRR"] = returns.compute_twrr(snaps, cash_flows)
 
     for tk in selected_tickers:

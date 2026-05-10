@@ -392,6 +392,78 @@ def test_get_ticker_price_on_date_falls_back_to_previous_trading_day():
 
 
 # ---------------------------------------------------------------------------
+# compute_ticker_snapshots
+# ---------------------------------------------------------------------------
+
+def _seed_prices(ticker: str, rows: list[tuple[str, float]]) -> None:
+    """Seed close prices for a ticker. rows = [(date_str, close), ...]"""
+    df = pl.DataFrame(
+        {
+            "date":  [r[0] for r in rows],
+            "open":  [r[1] for r in rows],
+            "high":  [r[1] for r in rows],
+            "low":   [r[1] for r in rows],
+            "close": [r[1] for r in rows],
+        },
+        schema=storage.TICKER_PRICES_SCHEMA,
+    )
+    storage.upsert_ticker_prices(ticker, df)
+
+
+def test_compute_ticker_snapshots_basic():
+    """Buy 10, buy 5, sell 3 → cumulative shares at each trade date correct."""
+    acct_id = storage.add_account("G", "VOO Fund", is_ticker=True, ticker="VOO")
+
+    _seed_prices("VOO", [
+        ("2024-01-02", 100.0),
+        ("2024-01-09", 110.0),
+        ("2024-01-16", 120.0),
+        ("2024-01-23", 130.0),   # used as through_date
+    ])
+
+    storage.add_entry(acct_id, 10 * 100.0, date(2024, 1, 2), shares=10.0, price_per_share=100.0)
+    storage.add_entry(acct_id, 5 * 110.0,  date(2024, 1, 9), shares=5.0,  price_per_share=110.0)
+    storage.add_entry(acct_id, -3 * 120.0, date(2024, 1, 16), shares=-3.0, price_per_share=120.0)
+
+    result = storage.compute_ticker_snapshots(acct_id, "VOO", through_date=date(2024, 1, 23))
+
+    assert len(result) == 4
+    d, v = result[0]; assert d == date(2024, 1, 2)  and abs(v - 10 * 100.0)  < 1e-9
+    d, v = result[1]; assert d == date(2024, 1, 9)  and abs(v - 15 * 110.0)  < 1e-9
+    d, v = result[2]; assert d == date(2024, 1, 16) and abs(v - 12 * 120.0)  < 1e-9
+    d, v = result[3]; assert d == date(2024, 1, 23) and abs(v - 12 * 130.0)  < 1e-9
+
+
+def test_compute_ticker_snapshots_reflects_deleted_entry():
+    """After removing an entry the snapshot recomputes with updated share count."""
+    acct_id = storage.add_account("G", "VOO2", is_ticker=True, ticker="VOO2")
+
+    _seed_prices("VOO2", [
+        ("2024-01-02", 100.0),
+        ("2024-01-09", 110.0),
+        ("2024-01-23", 130.0),
+    ])
+
+    storage.add_entry(acct_id, 1000.0, date(2024, 1, 2), shares=10.0, price_per_share=100.0)
+    eid = storage.add_entry(acct_id, 550.0, date(2024, 1, 9), shares=5.0, price_per_share=110.0)
+
+    result_before = storage.compute_ticker_snapshots(acct_id, "VOO2", through_date=date(2024, 1, 23))
+    assert dict(result_before)[date(2024, 1, 23)] == 15 * 130.0  # 15 shares
+
+    storage.remove_entries([eid])
+    result_after = storage.compute_ticker_snapshots(acct_id, "VOO2", through_date=date(2024, 1, 23))
+    assert dict(result_after)[date(2024, 1, 23)] == 10 * 130.0   # 10 shares — updated
+
+
+def test_compute_ticker_snapshots_empty_when_no_prices():
+    """If no prices are cached the result is an empty list (not an error)."""
+    acct_id = storage.add_account("G", "NOPRICE", is_ticker=True, ticker="NOPRICE")
+    storage.add_entry(acct_id, 1000.0, date(2024, 1, 2), shares=10.0, price_per_share=100.0)
+    assert storage.compute_ticker_snapshots(acct_id, "NOPRICE", through_date=date(2024, 1, 23)) == []
+
+
+
+# ---------------------------------------------------------------------------
 # Migrations
 # ---------------------------------------------------------------------------
 
