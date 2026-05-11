@@ -25,10 +25,11 @@ import polars as pl
 _LIB_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _LIB_DIR.parent
 DATA_DIR = _PROJECT_ROOT / "data"
+USER_DATA_DIR = DATA_DIR / "user_data"
 TICKERS_DIR = DATA_DIR / "tickers"
 
-ACCOUNTS_PATH = DATA_DIR / "accounts.csv"
-ENTRIES_PATH = DATA_DIR / "entries.csv"
+ACCOUNTS_PATH = USER_DATA_DIR / "accounts.csv"
+ENTRIES_PATH = USER_DATA_DIR / "entries.csv"
 TICKER_METADATA_PATH = TICKERS_DIR / "_metadata.csv"
 
 # Legacy path — only used by the one-time migration from the old two-table layout.
@@ -45,13 +46,14 @@ def set_data_dir(path: str | Path) -> None:
     Override the data directory location. Used primarily by tests to point
     at a tmp directory. Must be called before any read/write.
     """
-    global DATA_DIR, TICKERS_DIR, ACCOUNTS_PATH, ENTRIES_PATH
+    global DATA_DIR, USER_DATA_DIR, TICKERS_DIR, ACCOUNTS_PATH, ENTRIES_PATH
     global _LEGACY_CURRENT_VALUES_PATH, TICKER_METADATA_PATH
 
     DATA_DIR = Path(path)
+    USER_DATA_DIR = DATA_DIR / "user_data"
     TICKERS_DIR = DATA_DIR / "tickers"
-    ACCOUNTS_PATH = DATA_DIR / "accounts.csv"
-    ENTRIES_PATH = DATA_DIR / "entries.csv"
+    ACCOUNTS_PATH = USER_DATA_DIR / "accounts.csv"
+    ENTRIES_PATH = USER_DATA_DIR / "entries.csv"
     _LEGACY_CURRENT_VALUES_PATH = DATA_DIR / "current_values.csv"
     TICKER_METADATA_PATH = TICKERS_DIR / "_metadata.csv"
 
@@ -107,6 +109,7 @@ VALID_PRICE_TYPES = {"open", "high", "low", "close"}
 def _ensure_dirs() -> None:
     """Create data directories if missing."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     TICKERS_DIR.mkdir(parents=True, exist_ok=True)
 
 

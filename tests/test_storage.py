@@ -453,7 +453,7 @@ def test_compute_ticker_snapshots_empty_when_no_prices():
 
 def test_migration_accounts_schema(tmp_path):
     storage.set_data_dir(tmp_path / "data_m")
-    (tmp_path / "data_m").mkdir(parents=True)
+    (tmp_path / "data_m" / "user_data").mkdir(parents=True)
 
     # Write old-schema accounts.csv
     old = pl.DataFrame(
@@ -477,7 +477,7 @@ def test_migration_accounts_schema(tmp_path):
 
 def test_migration_entries_add_share_columns(tmp_path):
     storage.set_data_dir(tmp_path / "data_e")
-    (tmp_path / "data_e").mkdir(parents=True)
+    (tmp_path / "data_e" / "user_data").mkdir(parents=True)
 
     aid = _acct()
     # Write old-schema entries.csv (without shares/price_per_share)
@@ -498,7 +498,7 @@ def test_migration_entries_add_share_columns(tmp_path):
 def test_migration_from_legacy_current_values(tmp_path, monkeypatch):
     """Legacy current_values.csv is merged into entries on first load."""
     storage.set_data_dir(tmp_path / "data2")
-    (tmp_path / "data2").mkdir(parents=True)
+    (tmp_path / "data2" / "user_data").mkdir(parents=True)
 
     aid = _acct()
     storage.add_entry(aid, 1000.0, date(2023, 1, 1))

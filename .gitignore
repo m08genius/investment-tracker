@@ -1,7 +1,5 @@
 # User's personal investment data — never commit
-data/accounts.csv
-data/entries.csv
-data/current_values.csv
+data/user_data/
 
 # Python
 __pycache__/
